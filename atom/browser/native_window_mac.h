@@ -82,6 +82,10 @@ class NativeWindowMac : public NativeWindow {
   // Called to handle a mouse event.
   void HandleMouseEvent(NSEvent* event);
 
+  // Restore the titlebar style to normal and set it back.
+  void SetTitleBarStyleToNormal();
+  void ResetTitleBarStyle();
+
  protected:
   // NativeWindow:
   void HandleKeyboardEvent(
@@ -105,6 +109,9 @@ class NativeWindowMac : public NativeWindow {
   bool is_kiosk_;
 
   NSInteger attention_request_id_;  // identifier from requestUserAttention
+
+  // The title bar style.
+  std::string title_bar_style_;
 
   // The presentation options before entering kiosk mode.
   NSApplicationPresentationOptions kiosk_options_;

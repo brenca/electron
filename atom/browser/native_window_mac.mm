@@ -176,6 +176,7 @@ bool ScopedDisableResize::disable_resize_ = false;
 }
 
 - (void)windowDidEnterFullScreen:(NSNotification*)notification {
+  shell_->SetTitleBarStyleToNormal();
   shell_->NotifyWindowEnterFullScreen();
 }
 
@@ -185,6 +186,7 @@ bool ScopedDisableResize::disable_resize_ = false;
     [[window standardWindowButton:NSWindowFullScreenButton] setHidden:YES];
   }
 
+  shell_->ResetTitleBarStyle();
   shell_->NotifyWindowLeaveFullScreen();
 }
 
@@ -352,16 +354,15 @@ NativeWindowMac::NativeWindowMac(
   options.Get(switches::kStandardWindow, &useStandardWindow);
 
   // New title bar styles are available in Yosemite or newer
-  std::string titleBarStyle;
   if (base::mac::IsOSYosemiteOrLater())
-    options.Get(switches::kTitleBarStyle, &titleBarStyle);
+    options.Get(switches::kTitleBarStyle, &title_bar_style_);
 
   NSUInteger styleMask = NSTitledWindowMask | NSClosableWindowMask |
                          NSMiniaturizableWindowMask | NSResizableWindowMask;
   if (!useStandardWindow || transparent() || !has_frame()) {
     styleMask |= NSTexturedBackgroundWindowMask;
   }
-  if ((titleBarStyle == "hidden") || (titleBarStyle == "hidden-inset")) {
+  if ((title_bar_style_ == "hidden") || (title_bar_style_ == "hidden-inset")) {
     styleMask |= NSFullSizeContentViewWindowMask;
     styleMask |= NSUnifiedTitleAndToolbarWindowMask;
   }
@@ -392,15 +393,10 @@ NativeWindowMac::NativeWindowMac(
   [window_ setReleasedWhenClosed:NO];
 
   // Hide the title bar.
-  if ((titleBarStyle == "hidden") || (titleBarStyle == "hidden-inset")) {
+  if ((title_bar_style_ == "hidden") || (title_bar_style_ == "hidden-inset")) {
     [window_ setTitlebarAppearsTransparent:YES];
     [window_ setTitleVisibility:NSWindowTitleHidden];
-    if (titleBarStyle == "hidden-inset") {
-      base::scoped_nsobject<NSToolbar> toolbar(
-          [[NSToolbar alloc] initWithIdentifier:@"titlebarStylingToolbar"]);
-      [toolbar setShowsBaselineSeparator:NO];
-      [window_ setToolbar:toolbar];
-    }
+    ResetTitleBarStyle();
     // We should be aware of draggable regions when using hidden titlebar.
     set_force_using_draggable_region(true);
   }
@@ -798,6 +794,32 @@ void NativeWindowMac::HandleMouseEvent(NSEvent* event) {
     [window_ setFrameOrigin:NSMakePoint(
         current_mouse_location.x + last_mouse_offset_.x,
         current_mouse_location.y + last_mouse_offset_.y)];
+  }
+}
+
+void NativeWindowMac::SetTitleBarStyleToNormal() {
+  if ((title_bar_style_ == "hidden") || (title_bar_style_ == "hidden-inset")) {
+    NSUInteger styleMask = [window_ styleMask];
+    styleMask &= !NSFullSizeContentViewWindowMask;
+    styleMask &= !NSUnifiedTitleAndToolbarWindowMask;
+    [window_ setStyleMask:styleMask];
+    if (title_bar_style_ == "hidden-inset")
+      [window_ setToolbar:nil];
+  }
+}
+
+void NativeWindowMac::ResetTitleBarStyle() {
+  if ((title_bar_style_ == "hidden") || (title_bar_style_ == "hidden-inset")) {
+    NSUInteger styleMask = [window_ styleMask];
+    styleMask |= NSFullSizeContentViewWindowMask;
+    styleMask |= NSUnifiedTitleAndToolbarWindowMask;
+    [window_ setStyleMask:styleMask];
+    if (title_bar_style_ == "hidden-inset") {
+      base::scoped_nsobject<NSToolbar> toolbar(
+          [[NSToolbar alloc] initWithIdentifier:@"titlebarStylingToolbar"]);
+      [toolbar setShowsBaselineSeparator:NO];
+      [window_ setToolbar:toolbar];
+    }
   }
 }
 
