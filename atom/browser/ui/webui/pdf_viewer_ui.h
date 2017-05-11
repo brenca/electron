@@ -7,6 +7,7 @@
 
 #include <string>
 
+#include "base/cancelable_callback.h"
 #include "base/macros.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui_controller.h"
@@ -33,10 +34,14 @@ class PdfViewerUI : public content::WebUIController,
   bool OnMessageReceived(const IPC::Message& message,
                          content::RenderFrameHost* render_frame_host) override;
   void RenderFrameCreated(content::RenderFrameHost* rfh) override;
+  void RenderFrameDeleted(content::RenderFrameHost* rfh) override;
+  void RenderProcessGone(base::TerminationStatus status) override;
 
  private:
   using StreamResponseCallback =
-      base::OnceCallback<void(std::unique_ptr<content::StreamInfo>)>;
+      base::CancelableCallback<void(std::unique_ptr<content::StreamInfo>)>;
+  using StreamResponseCallbackBase =
+      base::Callback<void(std::unique_ptr<content::StreamInfo>)>;
   class ResourceRequester;
 
   void OnPdfStreamCreated(std::unique_ptr<content::StreamInfo> stream_info);
@@ -48,6 +53,7 @@ class PdfViewerUI : public content::WebUIController,
   PdfViewerHandler* pdf_handler_;
 
   scoped_refptr<ResourceRequester> resource_requester_;
+  std::shared_ptr<StreamResponseCallback> callback_;
 
   // Pdf Resource stream.
   std::unique_ptr<content::StreamInfo> stream_;

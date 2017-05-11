@@ -104,7 +104,8 @@ class BundledDataSource : public content::URLDataSource {
 template <typename T>
 void CallMigrationCallback(T callback,
                            std::unique_ptr<content::StreamInfo> stream_info) {
-  std::move(callback).Run(std::move(stream_info));
+  if (!callback->IsCancelled())
+    callback->callback().Run(std::move(stream_info));
 }
 
 }  // namespace
@@ -114,8 +115,8 @@ class PdfViewerUI::ResourceRequester
                                         BrowserThread::DeleteOnIOThread>,
       public atom::LayeredResourceHandler::Delegate {
  public:
-  explicit ResourceRequester(StreamResponseCallback cb)
-      : stream_response_cb_(std::move(cb)) {}
+  explicit ResourceRequester(std::shared_ptr<StreamResponseCallback> cb)
+      : stream_response_cb_(cb) {}
 
   void StartRequest(const GURL& url,
                     const GURL& origin,
@@ -180,8 +181,8 @@ class PdfViewerUI::ResourceRequester
 
     BrowserThread::PostTask(
         BrowserThread::UI, FROM_HERE,
-        base::Bind(&CallMigrationCallback<StreamResponseCallback>,
-                   base::Passed(&stream_response_cb_),
+        base::Bind(&CallMigrationCallback<std::shared_ptr<StreamResponseCallback> >,
+                   stream_response_cb_, 
                    base::Passed(&stream_info_)));
   }
 
@@ -190,7 +191,7 @@ class PdfViewerUI::ResourceRequester
   friend class base::DeleteHelper<ResourceRequester>;
   ~ResourceRequester() override {}
 
-  StreamResponseCallback stream_response_cb_;
+  std::shared_ptr<StreamResponseCallback> stream_response_cb_;
   std::unique_ptr<content::StreamInfo> stream_info_;
 
   DISALLOW_COPY_AND_ASSIGN(ResourceRequester);
@@ -208,7 +209,9 @@ PdfViewerUI::PdfViewerUI(content::BrowserContext* browser_context,
   content::URLDataSource::Add(browser_context, new BundledDataSource);
 }
 
-PdfViewerUI::~PdfViewerUI() {}
+PdfViewerUI::~PdfViewerUI() {
+  callback_->Cancel();
+}
 
 bool PdfViewerUI::OnMessageReceived(
     const IPC::Message& message,
@@ -235,14 +238,22 @@ void PdfViewerUI::RenderFrameCreated(content::RenderFrameHost* rfh) {
   int render_view_id = rfh->GetRenderViewHost()->GetRoutingID();
   auto resource_context =
       web_contents()->GetBrowserContext()->GetResourceContext();
-  auto callback =
-      base::BindOnce(&PdfViewerUI::OnPdfStreamCreated, base::Unretained(this));
-  resource_requester_ = new ResourceRequester(std::move(callback));
+  callback_.reset(new StreamResponseCallback(
+    base::Bind(&PdfViewerUI::OnPdfStreamCreated, base::Unretained(this))));
+  resource_requester_ = new ResourceRequester(callback_);
   BrowserThread::PostTask(
       BrowserThread::IO, FROM_HERE,
       base::Bind(&ResourceRequester::StartRequest, resource_requester_,
                  GURL(src_), GURL(kPdfViewerUIOrigin), render_process_id,
                  render_view_id, render_frame_id, resource_context));
+}
+
+void PdfViewerUI::RenderFrameDeleted(content::RenderFrameHost* rfh) {
+  callback_->Cancel();
+}
+
+void PdfViewerUI::RenderProcessGone(base::TerminationStatus status) {
+  callback_->Cancel();
 }
 
 void PdfViewerUI::OnSaveURLAs(const GURL& url,
