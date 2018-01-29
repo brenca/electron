@@ -13,11 +13,12 @@
 namespace atom {
 
 OffScreenWebContentsView::OffScreenWebContentsView(
-    bool transparent, const OnPaintCallback& callback)
+    bool transparent, float scale_factor, const OnPaintCallback& callback)
     : transparent_(transparent),
       painting_(true),
       frame_rate_(60),
       callback_(callback),
+      scale_factor_(scale_factor),
       web_contents_(nullptr) {
 #if defined(OS_MACOSX)
   PlatformCreate();
@@ -107,6 +108,7 @@ content::RenderWidgetHostViewBase*
       transparent_,
       painting_,
       GetFrameRate(),
+      GetScaleFactor(),
       callback_,
       render_widget_host,
       nullptr,
@@ -131,6 +133,7 @@ content::RenderWidgetHostViewBase*
       transparent_,
       true,
       view->GetFrameRate(),
+      GetScaleFactor(),
       callback_,
       render_widget_host,
       view,
@@ -162,7 +165,7 @@ void OffScreenWebContentsView::GetScreenInfo(
   screen_info->depth = 24;
   screen_info->depth_per_component = 8;
   screen_info->orientation_angle = 0;
-  screen_info->device_scale_factor = 1.0;
+  screen_info->device_scale_factor = scale_factor_;
   screen_info->orientation_type =
       content::SCREEN_ORIENTATION_VALUES_LANDSCAPE_PRIMARY;
 
@@ -175,6 +178,17 @@ void OffScreenWebContentsView::GetScreenInfo(
     screen_info->rect = display.bounds();
     screen_info->available_rect = display.work_area();
   }
+}
+
+void OffScreenWebContentsView::SetScaleFactor(float factor) {
+  scale_factor_ = factor;
+  if (GetView()) {
+    GetView()->SetScaleFactor(scale_factor_);
+  }
+}
+
+float OffScreenWebContentsView::GetScaleFactor() {
+  return scale_factor_;
 }
 
 #if defined(OS_MACOSX)

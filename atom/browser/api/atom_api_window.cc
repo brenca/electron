@@ -99,6 +99,10 @@ Window::Window(v8::Isolate* isolate, v8::Local<v8::Object> wrapper,
     auto window_options = const_cast<mate::Dictionary&>(options);
     window_options.Set(options::kFrame, false);
   }
+
+  v8::Local<v8::Value> scaleFactor;
+  if (options.Get("scaleFactor", &scaleFactor))
+    web_preferences.Set("scaleFactor", scaleFactor);
 #endif
 
   if (options.Get("webContents", &web_contents)) {

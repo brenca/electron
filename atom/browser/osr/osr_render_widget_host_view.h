@@ -76,6 +76,7 @@ class OffScreenRenderWidgetHostView
   OffScreenRenderWidgetHostView(bool transparent,
                                 bool painting,
                                 int frame_rate,
+                                float scale_factor,
                                 const OnPaintCallback& callback,
                                 content::RenderWidgetHost* render_widget_host,
                                 OffScreenRenderWidgetHostView* parent_host_view,
@@ -266,14 +267,19 @@ class OffScreenRenderWidgetHostView
 
   void set_popup_host_view(OffScreenRenderWidgetHostView* popup_view) {
     popup_host_view_ = popup_view;
+    Invalidate();
   }
 
   void set_child_host_view(OffScreenRenderWidgetHostView* child_view) {
     child_host_view_ = child_view;
   }
 
+  void SetScaleFactor(float factor);
+
  private:
   void SetupFrameRate(bool force);
+  gfx::Size GetCompensatedSize() const;
+  void SetDeviceScaleFactor();
   void ResizeRootLayer();
 
   cc::FrameSinkId AllocateFrameSinkId(bool is_guest_view_hack);
