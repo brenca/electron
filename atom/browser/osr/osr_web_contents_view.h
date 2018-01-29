@@ -23,7 +23,9 @@ namespace atom {
 class OffScreenWebContentsView : public content::WebContentsView,
                                  public content::RenderViewHostDelegateView {
  public:
-  OffScreenWebContentsView(bool transparent, const OnPaintCallback& callback);
+   OffScreenWebContentsView(bool transparent,
+                            float scale_factor,
+                            const OnPaintCallback& callback);
   ~OffScreenWebContentsView();
 
   void SetWebContents(content::WebContents*);
@@ -53,6 +55,9 @@ class OffScreenWebContentsView : public content::WebContentsView,
   void SetOverscrollControllerEnabled(bool enabled) override;
   void GetScreenInfo(content::ScreenInfo* screen_info) const override;
 
+  void SetScaleFactor(float factor);
+  float GetScaleFactor();
+
 #if defined(OS_MACOSX)
   void SetAllowOtherViews(bool allow) override;
   bool GetAllowOtherViews() const override;
@@ -79,6 +84,8 @@ class OffScreenWebContentsView : public content::WebContentsView,
 
   const bool transparent_;
   OnPaintCallback callback_;
+
+  float scale_factor_;
 
   // Weak refs.
   content::WebContents* web_contents_;

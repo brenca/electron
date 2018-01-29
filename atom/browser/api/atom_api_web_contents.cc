@@ -359,8 +359,12 @@ WebContents::WebContents(v8::Isolate* isolate, const mate::Dictionary& options)
     params.guest_delegate = guest_delegate_.get();
 
 #if defined(ENABLE_OSR)
+    float scaleFactor = 1.0f;
+    options.Get("scaleFactor", &scaleFactor);
+    SetScaleFactor(scaleFactor);
+
     if (embedder_ && embedder_->IsOffScreen()) {
-      auto* view = new OffScreenWebContentsView(false,
+      auto* view = new OffScreenWebContentsView(false, scaleFactor,
           base::Bind(&WebContents::OnPaint, base::Unretained(this)));
       params.view = view;
       params.delegate_view = view;
@@ -375,10 +379,13 @@ WebContents::WebContents(v8::Isolate* isolate, const mate::Dictionary& options)
   } else if (IsOffScreen()) {
     bool transparent = false;
     options.Get("transparent", &transparent);
+    float scaleFactor = 1.0f;
+    options.Get("scaleFactor", &scaleFactor);
+    SetScaleFactor(scaleFactor);
 
     content::WebContents::CreateParams params(session->browser_context());
-    auto* view = new OffScreenWebContentsView(
-        transparent, base::Bind(&WebContents::OnPaint, base::Unretained(this)));
+    auto* view = new OffScreenWebContentsView(transparent, scaleFactor,
+        base::Bind(&WebContents::OnPaint, base::Unretained(this)));
     params.view = view;
     params.delegate_view = view;
 
@@ -1469,17 +1476,24 @@ bool WebContents::SendIPCMessage(bool all_frames,
   return Send(new AtomViewMsg_Message(routing_id(), all_frames, channel, args));
 }
 
+void ScaleWebMouseEvent(blink::WebMouseEvent& event, float scale) {
+  blink::WebFloatPoint pos = event.PositionInWidget();
+  event.SetPositionInWidget(floor(pos.x / scale), floor(pos.y / scale));
+}
+
 void WebContents::SendInputEvent(v8::Isolate* isolate,
                                  v8::Local<v8::Value> input_event) {
   const auto view = static_cast<content::RenderWidgetHostViewBase*>(
     web_contents()->GetRenderWidgetHostView());
   if (!view)
     return;
+  float scale = view->current_device_scale_factor();
 
   int type = mate::GetWebInputEventType(isolate, input_event);
   if (blink::WebInputEvent::IsMouseEventType(type)) {
     blink::WebMouseEvent mouse_event;
     if (mate::ConvertFromV8(isolate, input_event, &mouse_event)) {
+      ScaleWebMouseEvent(mouse_event, scale);
       view->ProcessMouseEvent(mouse_event, ui::LatencyInfo());
       return;
     }
@@ -1495,6 +1509,7 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
   } else if (type == blink::WebInputEvent::kMouseWheel) {
     blink::WebMouseWheelEvent mouse_wheel_event;
     if (mate::ConvertFromV8(isolate, input_event, &mouse_wheel_event)) {
+      ScaleWebMouseEvent(mouse_wheel_event, scale);
       view->ProcessMouseWheelEvent(mouse_wheel_event, ui::LatencyInfo());
       return;
     }
@@ -1716,6 +1731,39 @@ void WebContents::Invalidate() {
   }
 }
 
+void WebContents::SetScaleFactor(float factor) {
+#if defined(ENABLE_OSR)
+  if (IsOffScreen()) {
+    auto* web_contents_impl = static_cast<content::WebContentsImpl*>(
+      web_contents());
+    if (!web_contents_impl) return;
+
+    auto* view = static_cast<OffScreenWebContentsView*>(
+      web_contents_impl->GetView());
+    if (!view) return;
+
+    view->SetScaleFactor(factor);
+  }
+#endif
+}
+
+float WebContents::GetScaleFactor() {
+#if defined(ENABLE_OSR)
+  if (IsOffScreen()) {
+    auto* web_contents_impl = static_cast<content::WebContentsImpl*>(
+      web_contents());
+    if (!web_contents_impl) return 0.0f;
+
+    auto* view = static_cast<OffScreenWebContentsView*>(
+      web_contents_impl->GetView());
+    if (!view) return 0.0f;
+
+    return view->GetScaleFactor();
+  }
+#endif
+  return 0.0f;
+}
+
 gfx::Size WebContents::GetSizeForNewRenderView(
     content::WebContents* wc) const {
   if (IsOffScreen() && wc == web_contents()) {
@@ -1905,6 +1953,8 @@ void WebContents::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("setFrameRate", &WebContents::SetFrameRate)
       .SetMethod("getFrameRate", &WebContents::GetFrameRate)
       .SetMethod("invalidate", &WebContents::Invalidate)
+      .SetMethod("setScaleFactor", &WebContents::SetScaleFactor)
+      .SetMethod("getScaleFactor", &WebContents::GetScaleFactor)
       .SetMethod("setZoomLevel", &WebContents::SetZoomLevel)
       .SetMethod("_getZoomLevel", &WebContents::GetZoomLevel)
       .SetMethod("setZoomFactor", &WebContents::SetZoomFactor)

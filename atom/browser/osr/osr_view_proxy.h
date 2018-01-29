@@ -34,7 +34,11 @@ class OffscreenViewProxy {
   void SetBitmap(const SkBitmap& bitmap);
 
   const gfx::Rect& GetBounds();
+  gfx::Rect GetBoundsScaled();
   void SetBounds(const gfx::Rect& bounds);
+
+  float GetScaleFactor();
+  void SetScaleFactor(float scale);
 
   void OnEvent(ui::Event* event);
 
@@ -43,6 +47,7 @@ class OffscreenViewProxy {
   views::View* view_;
 
   gfx::Rect view_bounds_;
+  float scale_factor_;
   std::unique_ptr<SkBitmap> view_bitmap_;
 
   OffscreenViewProxyObserver* observer_;
