@@ -203,6 +203,7 @@ class OffScreenRenderWidgetHostView
   bool IsAutoResizeEnabled() const;
 
   // NativeWindowObserver:
+  void OnWindowSizeSet() override;
   void OnWindowResize() override;
   void OnWindowClosed() override;
 

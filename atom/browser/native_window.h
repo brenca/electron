@@ -104,6 +104,7 @@ class NativeWindow : public base::SupportsUserData,
   virtual void SetContentSizeConstraints(
       const extensions::SizeConstraints& size_constraints);
   virtual extensions::SizeConstraints GetContentSizeConstraints() const;
+  virtual extensions::SizeConstraints GetCappedContentSizeConstraints() const;
   virtual void SetMinimumSize(const gfx::Size& size);
   virtual gfx::Size GetMinimumSize() const;
   virtual void SetMaximumSize(const gfx::Size& size);
@@ -252,6 +253,7 @@ class NativeWindow : public base::SupportsUserData,
   void NotifyWindowMinimize();
   void NotifyWindowRestore();
   void NotifyWindowMove();
+  void NotifyWindowSizeSet();
   void NotifyWindowResize();
   void NotifyWindowMoved();
   void NotifyWindowScrollTouchBegin();

@@ -487,12 +487,8 @@ bool WebContents::DidAddMessageToConsole(content::WebContents* source,
                                          const base::string16& message,
                                          int32_t line_no,
                                          const base::string16& source_id) {
-  if (type_ == OFF_SCREEN) {
-    return false;
-  } else {
-    Emit("console-message", level, message, line_no, source_id);
-    return true;
-  }
+  Emit("console-message", level, message, line_no, source_id);
+  return true;
 }
 
 void WebContents::OnCreateWindow(
@@ -1740,6 +1736,11 @@ void WebContents::SetScaleFactor(float factor) {
     auto* web_contents_impl = static_cast<content::WebContentsImpl*>(
       web_contents());
     if (!web_contents_impl) return;
+
+    auto relay = NativeWindowRelay::FromWebContents(web_contents());
+    if (relay) {
+      relay->window->HideAutofillPopup(web_contents()->GetMainFrame());
+    }
 
     auto* view = static_cast<OffScreenWebContentsView*>(
       web_contents_impl->GetView());

@@ -39,8 +39,8 @@ class AutofillPopup {
   int GetDesiredPopupHeight();
   int GetDesiredPopupWidth();
   gfx::Rect GetRowBounds(int i);
-  const gfx::FontList& GetValueFontListForRow(int index) const;
-  const gfx::FontList& GetLabelFontListForRow(int index) const;
+  const gfx::FontList GetValueFontListForRow(int index) const;
+  const gfx::FontList GetLabelFontListForRow(int index) const;
   ui::NativeTheme::ColorId GetBackgroundColorIDForRow(int index) const;
 
   int GetLineCount();

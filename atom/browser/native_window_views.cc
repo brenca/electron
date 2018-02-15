@@ -560,7 +560,8 @@ void NativeWindowViews::SetBounds(const gfx::Rect& bounds, bool animate) {
   }
 #endif
 
-  window_->SetBounds(bounds);
+  window_->SetSize(bounds.size());
+  NotifyWindowSizeSet();
 }
 
 gfx::Rect NativeWindowViews::GetBounds() {

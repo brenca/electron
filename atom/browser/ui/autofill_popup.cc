@@ -233,11 +233,25 @@ gfx::Rect AutofillPopup::GetRowBounds(int index) {
                    kRowHeight);
 }
 
-const gfx::FontList& AutofillPopup::GetValueFontListForRow(int index) const {
+const gfx::FontList AutofillPopup::GetValueFontListForRow(int index) const {
+#if defined(ENABLE_OSR)
+  if (view_) {
+    int delta = - std::ceil(bold_font_list_.GetFontSize() *
+                            (1.0f - view_->ScaleFactor()));
+    return bold_font_list_.DeriveWithSizeDelta(delta);
+  }
+#endif
   return bold_font_list_;
 }
 
-const gfx::FontList& AutofillPopup::GetLabelFontListForRow(int index) const {
+const gfx::FontList AutofillPopup::GetLabelFontListForRow(int index) const {
+#if defined(ENABLE_OSR)
+  if (view_) {
+    int delta = - std::ceil(smaller_font_list_.GetFontSize() *
+                            (1.0f - view_->ScaleFactor()));
+    return smaller_font_list_.DeriveWithSizeDelta(delta);
+  }
+#endif
   return smaller_font_list_;
 }
 
