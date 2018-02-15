@@ -131,6 +131,12 @@ void AutofillPopupView::OnSuggestionsChanged() {
   DoUpdateBoundsAndRedrawPopup();
 }
 
+#if defined(ENABLE_OSR)
+float AutofillPopupView::ScaleFactor() {
+  return view_proxy_.get() ? view_proxy_->GetScaleFactor() : 1.0f;
+}
+#endif
+
 void AutofillPopupView::OnSelectedRowChanged(
     base::Optional<int> previous_row_selection,
     base::Optional<int> current_row_selection) {

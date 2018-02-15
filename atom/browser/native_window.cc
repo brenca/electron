@@ -287,6 +287,11 @@ extensions::SizeConstraints NativeWindow::GetContentSizeConstraints() const {
   return size_constraints_;
 }
 
+extensions::SizeConstraints
+NativeWindow::GetCappedContentSizeConstraints() const {
+  return GetContentSizeConstraints();
+}
+
 void NativeWindow::SetMinimumSize(const gfx::Size& size) {
   extensions::SizeConstraints size_constraints;
   size_constraints.set_minimum_size(size);
@@ -546,6 +551,11 @@ void NativeWindow::NotifyWindowMinimize() {
 void NativeWindow::NotifyWindowRestore() {
   for (NativeWindowObserver& observer : observers_)
     observer.OnWindowRestore();
+}
+
+void NativeWindow::NotifyWindowSizeSet() {
+  for (NativeWindowObserver& observer : observers_)
+    observer.OnWindowSizeSet();
 }
 
 void NativeWindow::NotifyWindowResize() {

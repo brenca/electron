@@ -63,6 +63,7 @@ class NativeWindowObserver {
   virtual void OnWindowUnmaximize() {}
   virtual void OnWindowMinimize() {}
   virtual void OnWindowRestore() {}
+  virtual void OnWindowSizeSet() {}
   virtual void OnWindowResize() {}
   virtual void OnWindowMove() {}
   virtual void OnWindowMoved() {}

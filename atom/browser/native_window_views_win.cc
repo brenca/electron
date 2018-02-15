@@ -5,6 +5,8 @@
 #include "atom/browser/browser.h"
 #include "atom/browser/native_window_views.h"
 #include "content/public/browser/browser_accessibility_state.h"
+#include "ui/base/win/shell.h"
+#include "ui/display/win/screen_win.h"
 
 namespace atom {
 
@@ -78,6 +80,19 @@ bool IsScreenReaderActive() {
   return screenReader && UiaClientsAreListening();
 }
 
+gfx::Size GetExpandedWindowSize(
+    bool is_translucent, gfx::Size size, gfx::Size min_size) {
+  if (!is_translucent || !ui::win::IsAeroGlassEnabled())
+    return size;
+
+  // Some AMD drivers can't display windows that are less than 64x64 pixels,
+  // so expand them to be at least that size. http://crbug.com/286609
+  gfx::Size expanded(
+    std::max(size.width(), min_size.width()),
+    std::max(size.height(), min_size.height()));
+  return expanded;
+}
+
 }  // namespace
 
 std::set<NativeWindowViews*> NativeWindowViews::forwarding_windows_;
@@ -87,6 +102,28 @@ bool NativeWindowViews::ExecuteWindowsCommand(int command_id) {
   std::string command = AppCommandToString(command_id);
   NotifyWindowExecuteWindowsCommand(command);
   return false;
+}
+
+extensions::SizeConstraints
+NativeWindowViews::GetCappedContentSizeConstraints() const {
+  gfx::Size expand_min = display::win::ScreenWin::ScreenToDIPSize(
+    GetAcceleratedWidget(), gfx::Size(64, 64));
+
+  extensions::SizeConstraints content_constraints = GetContentSizeConstraints();
+  extensions::SizeConstraints capped_constraints;
+  if (content_constraints.HasMaximumSize()) {
+    gfx::Size max_size = content_constraints.GetMaximumSize();
+
+    capped_constraints.set_maximum_size(
+      GetExpandedWindowSize(transparent(), max_size, expand_min));
+  }
+  if (content_constraints.HasMinimumSize()) {
+    gfx::Size min_size = content_constraints.GetMinimumSize();
+
+    capped_constraints.set_minimum_size(
+      GetExpandedWindowSize(transparent(), min_size, expand_min));
+  }
+  return capped_constraints;
 }
 
 bool NativeWindowViews::PreHandleMSG(
