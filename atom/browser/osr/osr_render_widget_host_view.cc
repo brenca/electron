@@ -43,7 +43,6 @@ namespace atom {
 
 namespace {
 
-const float kDefaultScaleFactor = 1.0;
 const int kFrameRetryLimit = 2;
 
 ui::MouseEvent UiMouseEventFromWebMouseEvent(blink::WebMouseEvent event) {
@@ -1215,7 +1214,7 @@ void OffScreenRenderWidgetHostView::Invalidate(bool force) {
 
 void OffScreenRenderWidgetHostView::InvalidateBounds(
     const gfx::Rect& bounds, bool force) {
-  compositor_->ScheduleRedrawRect(bounds);
+  GetCompositor()->ScheduleRedrawRect(bounds);
 
   if (force) {
     if (software_output_device_) {
@@ -1263,7 +1262,7 @@ void OffScreenRenderWidgetHostView::SetDeviceScaleFactor() {
 void OffScreenRenderWidgetHostView::ResizeRootLayer() {
   SetupFrameRate(false);
 
-  const float orgScaleFactor = current_device_scale_factor_;
+  const float orgScaleFactor = GetRootLayer()->device_scale_factor();
   SetDeviceScaleFactor();
   const bool scaleFactorDidChange =
       (orgScaleFactor != current_device_scale_factor_);
