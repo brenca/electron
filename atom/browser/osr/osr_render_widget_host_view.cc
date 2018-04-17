@@ -891,7 +891,7 @@ void OffScreenRenderWidgetHostView::RemoveViewProxy(OffscreenViewProxy* proxy) {
 void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
     OffscreenViewProxy* proxy) {
   proxy_views_.erase(proxy);
-  Invalidate(true);
+  InvalidateOutputDeviceRect(gfx::Rect(size_));
 }
 
 void OffScreenRenderWidgetHostView::RegisterGuestViewFrameSwappedCallback(
@@ -904,9 +904,7 @@ void OffScreenRenderWidgetHostView::RegisterGuestViewFrameSwappedCallback(
 
 void OffScreenRenderWidgetHostView::OnGuestViewFrameSwapped(
     content::RenderWidgetHostViewGuest* guest_host_view) {
-  InvalidateBounds(gfx::ConvertRectToPixel(current_device_scale_factor_,
-    guest_host_view->GetViewBounds()), false);
-
+  Invalidate();
   RegisterGuestViewFrameSwappedCallback(guest_host_view);
 }
 
@@ -997,12 +995,12 @@ void OffScreenRenderWidgetHostView::OnPopupPaint(
     const gfx::Rect& damage_rect, const SkBitmap& bitmap) {
   if (popup_host_view_ && popup_bitmap_.get())
     bitmap.deepCopyTo(popup_bitmap_.get());
-  InvalidateBounds(popup_host_view_->popup_position_, true);
+  InvalidateOutputDeviceRect(popup_host_view_->popup_position_);
 }
 
 void OffScreenRenderWidgetHostView::OnProxyViewPaint(
     const gfx::Rect& damage_rect) {
-  InvalidateBounds(damage_rect, true);
+  InvalidateOutputDeviceRect(damage_rect);
 }
 
 void OffScreenRenderWidgetHostView::HoldResize() {
@@ -1136,7 +1134,7 @@ void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
   }
 
   if (painting_) {
-    Invalidate(true);
+    InvalidateOutputDeviceRect(gfx::Rect(size_));
   }
 }
 
@@ -1208,20 +1206,17 @@ void OffScreenRenderWidgetHostView::SetupFrameRate(bool force) {
   }
 }
 
-void OffScreenRenderWidgetHostView::Invalidate(bool force) {
-  InvalidateBounds(gfx::Rect(size_), force);
+void OffScreenRenderWidgetHostView::Invalidate() {
+  GetRenderWidgetHost()->Send(new ViewMsg_ForceRedraw(
+    GetRenderWidgetHost()->GetRoutingID(), ui::LatencyInfo()));
 }
 
-void OffScreenRenderWidgetHostView::InvalidateBounds(
-    const gfx::Rect& bounds, bool force) {
-  GetCompositor()->ScheduleRedrawRect(bounds);
-
-  if (force) {
-    if (software_output_device_) {
-      software_output_device_->OnPaint(bounds);
-    } else if (copy_frame_generator_) {
-      copy_frame_generator_->GenerateCopyFrame(bounds);
-    }
+void OffScreenRenderWidgetHostView::InvalidateOutputDeviceRect(
+    const gfx::Rect& bounds) {
+  if (software_output_device_) {
+    software_output_device_->OnPaint(bounds);
+  } else if (copy_frame_generator_) {
+    copy_frame_generator_->GenerateCopyFrame(bounds);
   }
 }
 
@@ -1233,7 +1228,7 @@ void OffScreenRenderWidgetHostView::SetScaleFactor(float factor) {
   }
 
   WasResized();
-  Invalidate(true);
+  InvalidateOutputDeviceRect(gfx::Rect(size_));
 }
 
 gfx::Size OffScreenRenderWidgetHostView::GetCompensatedSize() const {
@@ -1276,8 +1271,9 @@ void OffScreenRenderWidgetHostView::ResizeRootLayer() {
       gfx::ConvertSizeToPixel(current_device_scale_factor_, size);
 
   GetRootLayer()->SetBounds(gfx::Rect(size));
-  GetCompositor()->SetScaleAndSize(current_device_scale_factor_, size_in_pixels);
-  Invalidate(true);
+  GetCompositor()->SetScaleAndSize(
+    current_device_scale_factor_, size_in_pixels);
+  InvalidateOutputDeviceRect(gfx::Rect(size_));
 }
 
 cc::FrameSinkId OffScreenRenderWidgetHostView::AllocateFrameSinkId(

@@ -1721,7 +1721,7 @@ void WebContents::Invalidate() {
     auto* osr_rwhv = static_cast<OffScreenRenderWidgetHostView*>(
       web_contents()->GetRenderWidgetHostView());
     if (osr_rwhv)
-      osr_rwhv->Invalidate(false);
+      osr_rwhv->Invalidate();
 #endif
   } else {
     const auto window = owner_window();

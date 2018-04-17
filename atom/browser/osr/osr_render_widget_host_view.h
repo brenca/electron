@@ -257,8 +257,8 @@ class OffScreenRenderWidgetHostView
   ui::Layer* GetRootLayer() const;
   content::DelegatedFrameHost* GetDelegatedFrameHost() const;
 
-  void Invalidate(bool force);
-  void InvalidateBounds(const gfx::Rect& bounds, bool force);
+  void Invalidate();
+  void InvalidateOutputDeviceRect(const gfx::Rect& bounds);
 
   content::RenderWidgetHostImpl* render_widget_host() const
       { return render_widget_host_; }
@@ -268,7 +268,7 @@ class OffScreenRenderWidgetHostView
 
   void set_popup_host_view(OffScreenRenderWidgetHostView* popup_view) {
     popup_host_view_ = popup_view;
-    Invalidate(true);
+    InvalidateOutputDeviceRect(gfx::Rect(size_));
   }
 
   void set_child_host_view(OffScreenRenderWidgetHostView* child_view) {
