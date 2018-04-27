@@ -239,6 +239,7 @@ class OffScreenRenderWidgetHostView
   void HoldResize();
   void ReleaseResize();
   void WasResized();
+  void SignalResize(bool invalidate);
 
   void ProcessKeyboardEvent(
       const content::NativeWebKeyboardEvent& event) override;

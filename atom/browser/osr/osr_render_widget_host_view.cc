@@ -788,8 +788,7 @@ bool OffScreenRenderWidgetHostView::DelegatedFrameCanCreateResizeLock() const {
 std::unique_ptr<content::CompositorResizeLock>
 OffScreenRenderWidgetHostView::DelegatedFrameHostCreateResizeLock() {
   HoldResize();
-  const gfx::Size& desired_size = GetRootLayer()->bounds().size();
-  return base::MakeUnique<content::CompositorResizeLock>(this, desired_size);
+  return base::MakeUnique<content::CompositorResizeLock>(this, size());
 }
 
 void
@@ -891,7 +890,7 @@ void OffScreenRenderWidgetHostView::RemoveViewProxy(OffscreenViewProxy* proxy) {
 void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
     OffscreenViewProxy* proxy) {
   proxy_views_.erase(proxy);
-  InvalidateOutputDeviceRect(gfx::Rect(size_));
+  Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::RegisterGuestViewFrameSwappedCallback(
@@ -948,15 +947,13 @@ void OffScreenRenderWidgetHostView::SetNeedsBeginFrames(
   begin_frame_timer_->SetActive(needs_begin_frames);
 
   if (software_output_device_) {
-    software_output_device_->SetActive(needs_begin_frames && painting_, false);
+    software_output_device_->SetActive(painting_, false);
   }
 }
 
 void OffScreenRenderWidgetHostView::OnPaint(
     const gfx::Rect& damage_rect, const SkBitmap& bitmap) {
   TRACE_EVENT0("electron", "OffScreenRenderWidgetHostView::OnPaint");
-
-  HoldResize();
 
   if (parent_callback_) {
     parent_callback_.Run(damage_rect, bitmap);
@@ -987,8 +984,6 @@ void OffScreenRenderWidgetHostView::OnPaint(
     callback_.Run(damage, canvas.GetBitmap());
     paint_callback_running_ = false;
   }
-
-  ReleaseResize();
 }
 
 void OffScreenRenderWidgetHostView::OnPopupPaint(
@@ -1004,20 +999,18 @@ void OffScreenRenderWidgetHostView::OnProxyViewPaint(
 }
 
 void OffScreenRenderWidgetHostView::HoldResize() {
-  if (!hold_resize_)
-    hold_resize_ = true;
+  hold_resize_ = true;
 }
 
 void OffScreenRenderWidgetHostView::ReleaseResize() {
-  if (!hold_resize_)
-    return;
-
-  hold_resize_ = false;
-  if (pending_resize_) {
-    pending_resize_ = false;
-    content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
-        base::Bind(&OffScreenRenderWidgetHostView::WasResized,
-                   weak_ptr_factory_.GetWeakPtr()));
+  if (hold_resize_) {
+    hold_resize_ = false;
+    if (pending_resize_) {
+      pending_resize_ = false;
+      content::BrowserThread::PostTask(content::BrowserThread::UI, FROM_HERE,
+          base::Bind(&OffScreenRenderWidgetHostView::SignalResize,
+                     weak_ptr_factory_.GetWeakPtr(), true));
+    }
   }
 }
 
@@ -1028,10 +1021,16 @@ void OffScreenRenderWidgetHostView::WasResized() {
     return;
   }
 
+  SignalResize(false);
+}
+
+void OffScreenRenderWidgetHostView::SignalResize(bool invalidate) {
   ResizeRootLayer();
   if (render_widget_host_)
     render_widget_host_->WasResized();
   GetDelegatedFrameHost()->WasResized();
+  if (invalidate)
+    Invalidate();
 }
 
 void OffScreenRenderWidgetHostView::ProcessKeyboardEvent(
@@ -1134,7 +1133,7 @@ void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
   }
 
   if (painting_) {
-    InvalidateOutputDeviceRect(gfx::Rect(size_));
+    Invalidate();
   }
 }
 
@@ -1228,7 +1227,6 @@ void OffScreenRenderWidgetHostView::SetScaleFactor(float factor) {
   }
 
   WasResized();
-  InvalidateOutputDeviceRect(gfx::Rect(size_));
 }
 
 gfx::Size OffScreenRenderWidgetHostView::GetCompensatedSize() const {
@@ -1273,7 +1271,7 @@ void OffScreenRenderWidgetHostView::ResizeRootLayer() {
   GetRootLayer()->SetBounds(gfx::Rect(size));
   GetCompositor()->SetScaleAndSize(
     current_device_scale_factor_, size_in_pixels);
-  InvalidateOutputDeviceRect(gfx::Rect(size_));
+  Invalidate();
 }
 
 cc::FrameSinkId OffScreenRenderWidgetHostView::AllocateFrameSinkId(
