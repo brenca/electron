@@ -50,7 +50,6 @@ class CursorManager;
 namespace electron {
 
 class ElectronCopyFrameGenerator;
-class ElectronBeginFrameTimer;
 
 class ElectronDelegatedFrameHostClient;
 
@@ -150,6 +149,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   const viz::LocalSurfaceIdAllocation& GetLocalSurfaceIdAllocation()
       const override;
   const viz::FrameSinkId& GetFrameSinkId() const override;
+  viz::FrameSinkId GetRootFrameSinkId() override;
 
   void DidNavigate() override;
 
@@ -164,8 +164,6 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   bool InstallTransparency();
 
-  void OnBeginFrameTimerTick();
-  void SendBeginFrame(base::TimeTicks frame_time, base::TimeDelta vsync_period);
   void CancelWidget();
   void AddGuestHostView(OffScreenRenderWidgetHostView* guest_host);
   void RemoveGuestHostView(OffScreenRenderWidgetHostView* guest_host);
@@ -275,13 +273,11 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   std::unique_ptr<content::CursorManager> cursor_manager_;
 
-  std::unique_ptr<ElectronBeginFrameTimer> begin_frame_timer_;
   OffScreenHostDisplayClient* host_display_client_;
   std::unique_ptr<OffScreenVideoConsumer> video_consumer_;
 
   // Provides |source_id| for BeginFrameArgs that we create.
   viz::StubBeginFrameSource begin_frame_source_;
-  uint64_t begin_frame_number_ = viz::BeginFrameArgs::kStartingFrameNumber;
   std::unique_ptr<ElectronDelegatedFrameHostClient>
       delegated_frame_host_client_;
 
