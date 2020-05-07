@@ -27,6 +27,7 @@
 #include "chrome/common/chrome_version.h"
 #include "components/net_log/chrome_net_log.h"
 #include "components/network_hints/common/network_hints.mojom.h"
+#include "content/common/widget_messages.h"
 #include "content/public/browser/browser_ppapi_host.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/client_certificate_delegate.h"
@@ -168,13 +169,52 @@ void BindNetworkHintsHandler(
   NetworkHintsHandlerImpl::Create(frame_host, std::move(receiver));
 }
 
+void ForwardCursorChange(const base::WeakPtr<api::WebContents>& web_contents,
+                         const content::WebCursor& cursor) {
+  if (web_contents)
+    web_contents->OnCursorChange(cursor);
+}
+
 #if defined(OS_WIN)
 const base::FilePath::StringPieceType kPathDelimiter = FILE_PATH_LITERAL(";");
 #else
 const base::FilePath::StringPieceType kPathDelimiter = FILE_PATH_LITERAL(":");
 #endif
 
+const uint32_t kRenderFilteredMessageClasses[] = {
+    WidgetMsgStart,
+};
+
 }  // namespace
+
+class CursorChangeFilter : public content::BrowserMessageFilter {
+ public:
+  explicit CursorChangeFilter(
+      const base::WeakPtr<api::WebContents>& web_contents)
+      : BrowserMessageFilter(kRenderFilteredMessageClasses,
+                             base::size(kRenderFilteredMessageClasses)),
+        web_contents_(web_contents) {}
+
+  bool OnMessageReceived(const IPC::Message& message) override {
+    IPC_BEGIN_MESSAGE_MAP(CursorChangeFilter, message)
+      IPC_MESSAGE_HANDLER(WidgetHostMsg_SetCursor, OnCursorChange)
+    IPC_END_MESSAGE_MAP()
+
+    return false;
+  }
+
+  void OnCursorChange(const content::WebCursor& cursor) {
+    base::PostTask(FROM_HERE, {BrowserThread::UI},
+                   base::BindOnce(&ForwardCursorChange, web_contents_, cursor));
+  }
+
+ private:
+  ~CursorChangeFilter() override {}
+
+  base::WeakPtr<api::WebContents> web_contents_;
+
+  DISALLOW_COPY_AND_ASSIGN(CursorChangeFilter);
+};
 
 // static
 void ElectronBrowserClient::SuppressRendererProcessRestartForOnce() {
@@ -367,8 +407,8 @@ void ElectronBrowserClient::RenderProcessWillLaunch(
 #endif
 
   ProcessPreferences prefs;
-  auto* web_preferences =
-      WebContentsPreferences::From(GetWebContentsFromProcessID(process_id));
+  content::WebContents* web_contents = GetWebContentsFromProcessID(process_id);
+  auto* web_preferences = WebContentsPreferences::From(web_contents);
   if (web_preferences) {
     prefs.sandbox = web_preferences->IsEnabled(options::kSandbox);
     prefs.native_window_open =
@@ -380,6 +420,11 @@ void ElectronBrowserClient::RenderProcessWillLaunch(
   }
 
   AddProcessPreferences(host->GetID(), prefs);
+
+  auto api_web_contents =
+      api::WebContents::From(v8::Isolate::GetCurrent(), web_contents);
+  if (!api_web_contents.IsEmpty())
+    host->AddFilter(new CursorChangeFilter(api_web_contents->GetWeakPtr()));
   // ensure the ProcessPreferences is removed later
   host->AddObserver(this);
 }
