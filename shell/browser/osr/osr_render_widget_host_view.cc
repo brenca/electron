@@ -74,9 +74,6 @@ ui::MouseEvent UiMouseEventFromWebMouseEvent(blink::WebMouseEvent event) {
     case blink::WebInputEvent::kMouseLeave:
       type = ui::EventType::ET_MOUSE_EXITED;
       break;
-    case blink::WebInputEvent::kMouseWheel:
-      type = ui::EventType::ET_MOUSEWHEEL;
-      break;
     default:
       type = ui::EventType::ET_UNKNOWN;
       break;
@@ -110,7 +107,8 @@ ui::MouseEvent UiMouseEventFromWebMouseEvent(blink::WebMouseEvent event) {
                           gfx::Point(std::floor(event.PositionInWidget().x),
                                      std::floor(event.PositionInWidget().y)),
                           ui::EventTimeForNow(), button_flags, button_flags);
-  ui_event.SetClickCount(event.click_count);
+  if (event.click_count > 0)
+    ui_event.SetClickCount(event.click_count);
 
   return ui_event;
 }
