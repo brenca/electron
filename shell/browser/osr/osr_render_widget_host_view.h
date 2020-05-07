@@ -192,6 +192,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   void SendMouseEvent(const blink::WebMouseEvent& event);
   void SendMouseWheelEvent(const blink::WebMouseWheelEvent& event);
+  bool ShouldRouteEvents() const;
 
   void SetPainting(bool painting);
   bool IsPainting() const;

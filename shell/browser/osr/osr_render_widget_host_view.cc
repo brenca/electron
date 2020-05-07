@@ -839,9 +839,16 @@ void OffScreenRenderWidgetHostView::SendMouseEvent(
     }
   }
 
-  if (!render_widget_host_)
-    return;
-  render_widget_host_->ForwardMouseEvent(event);
+  if (render_widget_host_ && render_widget_host_->GetView()) {
+    if (ShouldRouteEvents()) {
+      render_widget_host_->delegate()->GetInputEventRouter()->RouteMouseEvent(
+          this, const_cast<blink::WebMouseEvent*>(&event),
+          ui::LatencyInfo(ui::SourceEventType::OTHER));
+    } else {
+      render_widget_host_->GetView()->ProcessMouseEvent(
+          event, ui::LatencyInfo(ui::SourceEventType::OTHER));
+    }
+  }
 }
 
 void OffScreenRenderWidgetHostView::SendMouseWheelEvent(
@@ -864,67 +871,66 @@ void OffScreenRenderWidgetHostView::SendMouseWheelEvent(
 
   blink::WebMouseWheelEvent mouse_wheel_event(event);
 
-  bool should_route_event =
-      render_widget_host_->delegate() &&
-      render_widget_host_->delegate()->GetInputEventRouter();
-  mouse_wheel_phase_handler_.SendWheelEndForTouchpadScrollingIfNeeded(
-      should_route_event);
-  mouse_wheel_phase_handler_.AddPhaseIfNeededAndScheduleEndEvent(
-      mouse_wheel_event, false);
+  if (!IsPopupWidget() && popup_host_view_) {
+    if (popup_host_view_->popup_position_.Contains(
+            mouse_wheel_event.PositionInWidget().x,
+            mouse_wheel_event.PositionInWidget().y)) {
+      blink::WebMouseWheelEvent popup_mouse_wheel_event(mouse_wheel_event);
+      popup_mouse_wheel_event.SetPositionInWidget(
+          mouse_wheel_event.PositionInWidget().x -
+              popup_host_view_->popup_position_.x(),
+          mouse_wheel_event.PositionInWidget().y -
+              popup_host_view_->popup_position_.y());
+      popup_mouse_wheel_event.SetPositionInScreen(
+          popup_mouse_wheel_event.PositionInWidget().x,
+          popup_mouse_wheel_event.PositionInWidget().y);
 
-  if (!IsPopupWidget()) {
-    if (popup_host_view_) {
-      if (popup_host_view_->popup_position_.Contains(
-              mouse_wheel_event.PositionInWidget().x,
-              mouse_wheel_event.PositionInWidget().y)) {
-        blink::WebMouseWheelEvent popup_mouse_wheel_event(mouse_wheel_event);
-        popup_mouse_wheel_event.SetPositionInWidget(
-            mouse_wheel_event.PositionInWidget().x -
-                popup_host_view_->popup_position_.x(),
-            mouse_wheel_event.PositionInWidget().y -
-                popup_host_view_->popup_position_.y());
-        popup_mouse_wheel_event.SetPositionInScreen(
-            popup_mouse_wheel_event.PositionInWidget().x,
-            popup_mouse_wheel_event.PositionInWidget().y);
-
-        popup_host_view_->SendMouseWheelEvent(popup_mouse_wheel_event);
-        return;
-      } else {
-        // Scrolling outside of the popup widget so destroy it.
-        // Execute asynchronously to avoid deleting the widget from inside some
-        // other callback.
-        base::PostTask(
-            FROM_HERE, {content::BrowserThread::UI},
-            base::BindOnce(&OffScreenRenderWidgetHostView::CancelWidget,
-                           popup_host_view_->weak_ptr_factory_.GetWeakPtr()));
-      }
-    } else if (!guest_host_views_.empty()) {
-      for (auto* guest_host_view : guest_host_views_) {
-        if (!guest_host_view->render_widget_host_ ||
-            !guest_host_view->render_widget_host_->GetView()) {
-          continue;
-        }
-        const gfx::Rect& guest_bounds =
-            guest_host_view->render_widget_host_->GetView()->GetViewBounds();
-        if (guest_bounds.Contains(mouse_wheel_event.PositionInWidget().x,
-                                  mouse_wheel_event.PositionInWidget().y)) {
-          blink::WebMouseWheelEvent guest_mouse_wheel_event(mouse_wheel_event);
-          guest_mouse_wheel_event.SetPositionInWidget(
-              mouse_wheel_event.PositionInWidget().x - guest_bounds.x(),
-              mouse_wheel_event.PositionInWidget().y - guest_bounds.y());
-          guest_mouse_wheel_event.SetPositionInScreen(
-              guest_mouse_wheel_event.PositionInWidget().x,
-              guest_mouse_wheel_event.PositionInWidget().y);
-
-          guest_host_view->SendMouseWheelEvent(guest_mouse_wheel_event);
-          return;
-        }
-      }
+      popup_host_view_->SendMouseWheelEvent(popup_mouse_wheel_event);
+      return;
+    } else {
+      // Scrolling outside of the popup widget so destroy it.
+      // Execute asynchronously to avoid deleting the widget from inside some
+      // other callback.
+      base::PostTask(
+          FROM_HERE, {content::BrowserThread::UI},
+          base::BindOnce(&OffScreenRenderWidgetHostView::CancelWidget,
+                         popup_host_view_->weak_ptr_factory_.GetWeakPtr()));
     }
   }
-  if (!render_widget_host_)
-    return;
-  render_widget_host_->ForwardWheelEvent(event);
+
+  if (render_widget_host_ && render_widget_host_->GetView()) {
+    blink::WebMouseWheelEvent mouse_wheel_event(event);
+
+    mouse_wheel_phase_handler_.SendWheelEndForTouchpadScrollingIfNeeded(false);
+    mouse_wheel_phase_handler_.AddPhaseIfNeededAndScheduleEndEvent(
+        mouse_wheel_event, false);
+
+    if (ShouldRouteEvents()) {
+      render_widget_host_->delegate()
+          ->GetInputEventRouter()
+          ->RouteMouseWheelEvent(
+              this, const_cast<blink::WebMouseWheelEvent*>(&mouse_wheel_event),
+              ui::LatencyInfo(ui::SourceEventType::WHEEL));
+    } else {
+      render_widget_host_->GetView()->ProcessMouseWheelEvent(
+          mouse_wheel_event, ui::LatencyInfo(ui::SourceEventType::WHEEL));
+    }
+  }
+}
+
+bool OffScreenRenderWidgetHostView::ShouldRouteEvents() const {
+  if (!render_widget_host_->delegate())
+    return false;
+
+  // Do not route events that are currently targeted to page popups such as
+  // <select> element drop-downs, since these cannot contain cross-process
+  // frames.
+  if (!render_widget_host_->delegate()->IsWidgetForMainFrame(
+          render_widget_host_)) {
+    return false;
+  }
+
+  return !!render_widget_host_->delegate()->GetInputEventRouter();
 }
 
 void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
