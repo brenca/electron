@@ -313,6 +313,8 @@ class WebContents : public mate::TrackableObject<WebContents>,
   bool IsPainting() const;
   void SetFrameRate(int frame_rate);
   int GetFrameRate() const;
+  void SetScaleFactor(float scale_factor);
+  float GetScaleFactor() const;
 #endif
   void Invalidate();
   gfx::Size GetSizeForNewRenderView(content::WebContents*) override;

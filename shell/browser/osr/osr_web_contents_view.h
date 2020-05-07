@@ -27,7 +27,9 @@ class OffScreenWebContentsView : public content::WebContentsView,
                                  public content::RenderViewHostDelegateView,
                                  public NativeWindowObserver {
  public:
-  OffScreenWebContentsView(bool transparent, const OnPaintCallback& callback);
+  OffScreenWebContentsView(bool transparent,
+                           float scale_factor,
+                           const OnPaintCallback& callback);
   ~OffScreenWebContentsView() override;
 
   void SetWebContents(content::WebContents*);
@@ -81,6 +83,8 @@ class OffScreenWebContentsView : public content::WebContentsView,
   bool IsPainting() const;
   void SetFrameRate(int frame_rate);
   int GetFrameRate() const;
+  void SetScaleFactor(float scale_factor);
+  float GetScaleFactor() const;
 
  private:
 #if defined(OS_MACOSX)
@@ -93,6 +97,7 @@ class OffScreenWebContentsView : public content::WebContentsView,
   NativeWindow* native_window_;
 
   const bool transparent_;
+  float scale_factor_;
   bool painting_ = true;
   int frame_rate_ = 60;
   OnPaintCallback callback_;

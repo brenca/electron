@@ -462,7 +462,7 @@ WebContents::WebContents(v8::Isolate* isolate, const mate::Dictionary& options)
 #if BUILDFLAG(ENABLE_OSR)
     if (embedder_ && embedder_->IsOffScreen()) {
       auto* view = new OffScreenWebContentsView(
-          false,
+          false, 0.0f,
           base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
       params.view = view;
       params.delegate_view = view;
@@ -476,11 +476,13 @@ WebContents::WebContents(v8::Isolate* isolate, const mate::Dictionary& options)
     }
   } else if (IsOffScreen()) {
     bool transparent = false;
+    float scaleFactor = 0.0f;
     options.Get("transparent", &transparent);
+    options.Get("scaleFactor", &scaleFactor);
 
     content::WebContents::CreateParams params(session->browser_context());
     auto* view = new OffScreenWebContentsView(
-        transparent,
+        transparent, scaleFactor,
         base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
     params.view = view;
     params.delegate_view = view;
@@ -2435,6 +2437,17 @@ int WebContents::GetFrameRate() const {
   auto* osr_wcv = GetOffScreenWebContentsView();
   return osr_wcv ? osr_wcv->GetFrameRate() : 0;
 }
+
+void WebContents::SetScaleFactor(float pixel_scale_factor) {
+  auto* osr_wcv = GetOffScreenWebContentsView();
+  if (osr_wcv)
+    osr_wcv->SetScaleFactor(pixel_scale_factor);
+}
+
+float WebContents::GetScaleFactor() const {
+  auto* osr_wcv = GetOffScreenWebContentsView();
+  return osr_wcv ? osr_wcv->GetScaleFactor() : 0.0f;
+}
 #endif
 
 void WebContents::Invalidate() {
@@ -2713,6 +2726,10 @@ void WebContents::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("isPainting", &WebContents::IsPainting)
       .SetMethod("setFrameRate", &WebContents::SetFrameRate)
       .SetMethod("getFrameRate", &WebContents::GetFrameRate)
+      .SetProperty("frameRate", &WebContents::GetFrameRate,
+                   &WebContents::SetFrameRate)
+      .SetProperty("scaleFactor", &WebContents::GetScaleFactor,
+                   &WebContents::SetScaleFactor)
 #endif
       .SetMethod("invalidate", &WebContents::Invalidate)
       .SetMethod("setZoomLevel", &WebContents::SetZoomLevel)

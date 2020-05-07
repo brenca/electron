@@ -66,7 +66,8 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
                                 const OnPaintCallback& callback,
                                 content::RenderWidgetHost* render_widget_host,
                                 OffScreenRenderWidgetHostView* parent_host_view,
-                                gfx::Size initial_size);
+                                gfx::Size initial_size,
+                                float scale_factor);
   ~OffScreenRenderWidgetHostView() override;
 
   content::BrowserAccessibilityManager* CreateBrowserAccessibilityManager(
@@ -198,6 +199,10 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void SetFrameRate(int frame_rate);
   int GetFrameRate() const;
 
+  bool UsingAutoScaleFactor();
+  void SetManualScaleFactor(float scale_factor);
+  float GetScaleFactor();
+
   ui::Compositor* GetCompositor() const;
   ui::Layer* GetRootLayer() const;
 
@@ -245,6 +250,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   int frame_rate_ = 0;
   int frame_rate_threshold_us_ = 0;
+  float manual_device_scale_factor_;
 
   base::Time last_time_ = base::Time::Now();
 

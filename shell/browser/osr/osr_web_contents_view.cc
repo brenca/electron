@@ -13,8 +13,12 @@ namespace electron {
 
 OffScreenWebContentsView::OffScreenWebContentsView(
     bool transparent,
+    float scale_factor,
     const OnPaintCallback& callback)
-    : native_window_(nullptr), transparent_(transparent), callback_(callback) {
+    : native_window_(nullptr),
+      transparent_(transparent),
+      scale_factor_(scale_factor),
+      callback_(callback) {
 #if defined(OS_MACOSX)
   PlatformCreate();
 #endif
@@ -121,7 +125,7 @@ OffScreenWebContentsView::CreateViewForWidget(
 
   return new OffScreenRenderWidgetHostView(
       transparent_, painting_, GetFrameRate(), callback_, render_widget_host,
-      nullptr, GetSize());
+      nullptr, GetSize(), GetScaleFactor());
 }
 
 content::RenderWidgetHostViewBase*
@@ -137,9 +141,9 @@ OffScreenWebContentsView::CreateViewForChildWidget(
                     ->GetRenderWidgetHostView()
               : web_contents_impl->GetRenderWidgetHostView());
 
-  return new OffScreenRenderWidgetHostView(transparent_, painting_,
-                                           view->GetFrameRate(), callback_,
-                                           render_widget_host, view, GetSize());
+  return new OffScreenRenderWidgetHostView(
+      transparent_, painting_, view->GetFrameRate(), callback_,
+      render_widget_host, view, GetSize(), GetScaleFactor());
 }
 
 void OffScreenWebContentsView::SetPageTitle(const base::string16& title) {}
@@ -209,6 +213,24 @@ int OffScreenWebContentsView::GetFrameRate() const {
     return view->GetFrameRate();
   } else {
     return frame_rate_;
+  }
+}
+
+void OffScreenWebContentsView::SetScaleFactor(float scale_factor) {
+  auto* view = GetView();
+  if (view != nullptr) {
+    view->SetManualScaleFactor(scale_factor);
+  } else {
+    scale_factor_ = scale_factor;
+  }
+}
+
+float OffScreenWebContentsView::GetScaleFactor() const {
+  auto* view = GetView();
+  if (view != nullptr) {
+    return view->GetScaleFactor();
+  } else {
+    return scale_factor_;
   }
 }
 
