@@ -166,8 +166,6 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   bool InstallTransparency();
 
   void CancelWidget();
-  void AddGuestHostView(OffScreenRenderWidgetHostView* guest_host);
-  void RemoveGuestHostView(OffScreenRenderWidgetHostView* guest_host);
   void AddViewProxy(OffscreenViewProxy* proxy);
   void RemoveViewProxy(OffscreenViewProxy* proxy);
   void ProxyViewDestroyed(OffscreenViewProxy* proxy) override;
@@ -242,7 +240,6 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   OffScreenRenderWidgetHostView* parent_host_view_ = nullptr;
   OffScreenRenderWidgetHostView* popup_host_view_ = nullptr;
   OffScreenRenderWidgetHostView* child_host_view_ = nullptr;
-  std::set<OffScreenRenderWidgetHostView*> guest_host_views_;
   std::set<OffscreenViewProxy*> proxy_views_;
 
   const bool transparent_;
@@ -253,9 +250,6 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   int frame_rate_threshold_us_ = 0;
   float manual_device_scale_factor_;
 
-  base::Time last_time_ = base::Time::Now();
-
-  gfx::Vector2dF last_scroll_offset_;
   gfx::Size size_;
   bool painting_;
 

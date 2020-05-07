@@ -479,14 +479,6 @@ void OffScreenRenderWidgetHostView::Destroy() {
         popup_host_view_->CancelWidget();
       if (child_host_view_)
         child_host_view_->CancelWidget();
-      if (!guest_host_views_.empty()) {
-        // Guest RWHVs will be destroyed when the associated RWHVGuest is
-        // destroyed. This parent RWHV may be destroyed first, so disassociate
-        // the guest RWHVs here without destroying them.
-        for (auto* guest_host_view : guest_host_views_)
-          guest_host_view->parent_host_view_ = nullptr;
-        guest_host_views_.clear();
-      }
       for (auto* proxy_view : proxy_views_)
         proxy_view->RemoveObserver();
       Hide();
@@ -607,8 +599,6 @@ void OffScreenRenderWidgetHostView::CancelWidget() {
     } else if (parent_host_view_->child_host_view_ == this) {
       parent_host_view_->set_child_host_view(nullptr);
       parent_host_view_->Show();
-    } else {
-      parent_host_view_->RemoveGuestHostView(this);
     }
     parent_host_view_ = nullptr;
   }
@@ -618,16 +608,6 @@ void OffScreenRenderWidgetHostView::CancelWidget() {
     // Results in a call to Destroy().
     render_widget_host_->ShutdownAndDestroyWidget(true);
   }
-}
-
-void OffScreenRenderWidgetHostView::AddGuestHostView(
-    OffScreenRenderWidgetHostView* guest_host) {
-  guest_host_views_.insert(guest_host);
-}
-
-void OffScreenRenderWidgetHostView::RemoveGuestHostView(
-    OffScreenRenderWidgetHostView* guest_host) {
-  guest_host_views_.erase(guest_host);
 }
 
 void OffScreenRenderWidgetHostView::AddViewProxy(OffscreenViewProxy* proxy) {
@@ -940,9 +920,6 @@ void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
     popup_host_view_->SetPainting(painting);
   }
 
-  for (auto* guest_host_view : guest_host_views_)
-    guest_host_view->SetPainting(painting);
-
   if (video_consumer_) {
     video_consumer_->SetActive(IsPainting());
   } else if (host_display_client_) {
@@ -974,9 +951,6 @@ void OffScreenRenderWidgetHostView::SetFrameRate(int frame_rate) {
   if (video_consumer_) {
     video_consumer_->SetFrameRate(GetFrameRate());
   }
-
-  for (auto* guest_host_view : guest_host_views_)
-    guest_host_view->SetFrameRate(frame_rate);
 }
 
 int OffScreenRenderWidgetHostView::GetFrameRate() const {
