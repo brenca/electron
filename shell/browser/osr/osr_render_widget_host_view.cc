@@ -723,6 +723,7 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
   HoldResize();
 
   gfx::Size size_in_pixels = SizeInPixels();
+  gfx::Rect damage_rect_union = damage_rect;
 
   SkBitmap frame;
 
@@ -739,6 +740,7 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
       if (popup_host_view_ && !popup_host_view_->GetBacking().drawsNothing()) {
         gfx::Rect rect_in_pixels = gfx::ConvertRectToPixel(
             GetScaleFactor(), popup_host_view_->popup_position_);
+        damage_rect_union.Union(rect_in_pixels);
         canvas.writePixels(popup_host_view_->GetBacking(),
                            rect_in_pixels.origin().x(),
                            rect_in_pixels.origin().y());
@@ -747,6 +749,7 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
       for (auto* proxy_view : proxy_views_) {
         gfx::Rect rect_in_pixels =
             gfx::ConvertRectToPixel(GetScaleFactor(), proxy_view->GetBounds());
+        damage_rect_union.Union(rect_in_pixels);
         canvas.writePixels(*proxy_view->GetBitmap(),
                            rect_in_pixels.origin().x(),
                            rect_in_pixels.origin().y());
@@ -754,9 +757,11 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
     }
   }
 
+  gfx::Rect damage =
+      gfx::IntersectRects(gfx::Rect(size_in_pixels), damage_rect_union);
+
   paint_callback_running_ = true;
-  callback_.Run(gfx::IntersectRects(gfx::Rect(size_in_pixels), damage_rect),
-                frame);
+  callback_.Run(damage, frame);
   paint_callback_running_ = false;
 
   ReleaseResize();
