@@ -623,7 +623,7 @@ void OffScreenRenderWidgetHostView::RemoveViewProxy(OffscreenViewProxy* proxy) {
 void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
     OffscreenViewProxy* proxy) {
   proxy_views_.erase(proxy);
-  Invalidate();
+  CompositeFrame(gfx::Rect(GetRequestedRendererSize()));
 }
 
 std::unique_ptr<viz::HostDisplayClient>
@@ -748,12 +748,12 @@ void OffScreenRenderWidgetHostView::CompositeFrame(
 }
 
 void OffScreenRenderWidgetHostView::OnPopupPaint(const gfx::Rect& damage_rect) {
-  InvalidateBounds(gfx::ConvertRectToPixel(GetScaleFactor(), damage_rect));
+  CompositeFrame(gfx::ConvertRectToPixel(GetScaleFactor(), damage_rect));
 }
 
 void OffScreenRenderWidgetHostView::OnProxyViewPaint(
     const gfx::Rect& damage_rect) {
-  InvalidateBounds(gfx::ConvertRectToPixel(GetScaleFactor(), damage_rect));
+  CompositeFrame(gfx::ConvertRectToPixel(GetScaleFactor(), damage_rect));
 }
 
 void OffScreenRenderWidgetHostView::HoldResize() {
@@ -925,6 +925,8 @@ void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
   } else if (host_display_client_) {
     host_display_client_->SetActive(IsPainting());
   }
+
+  Invalidate();
 }
 
 bool OffScreenRenderWidgetHostView::IsPainting() const {
@@ -1005,11 +1007,7 @@ void OffScreenRenderWidgetHostView::SetupFrameRate(bool force) {
 }
 
 void OffScreenRenderWidgetHostView::Invalidate() {
-  InvalidateBounds(gfx::Rect(GetRequestedRendererSize()));
-}
-
-void OffScreenRenderWidgetHostView::InvalidateBounds(const gfx::Rect& bounds) {
-  CompositeFrame(bounds);
+  GetCompositor()->ScheduleFullRedraw();
 }
 
 void OffScreenRenderWidgetHostView::ResizeRootLayer(bool force) {
