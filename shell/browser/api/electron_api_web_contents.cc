@@ -2187,12 +2187,15 @@ bool WebContents::SendIPCMessageToFrame(bool internal,
 
 void WebContents::SendInputEvent(v8::Isolate* isolate,
                                  v8::Local<v8::Value> input_event) {
-  content::RenderWidgetHostView* view =
-      web_contents()->GetRenderWidgetHostView();
+  content::RenderFrameHost* focused_frame = web_contents()->GetFocusedFrame();
+  if (!focused_frame)
+    focused_frame = web_contents()->GetMainFrame();
+  content::RenderWidgetHostView* view = focused_frame->GetView();
   if (!view)
     return;
 
   content::RenderWidgetHost* rwh = view->GetRenderWidgetHost();
+
   blink::WebInputEvent::Type type =
       mate::GetWebInputEventType(isolate, input_event);
   if (blink::WebInputEvent::IsMouseEventType(type)) {
