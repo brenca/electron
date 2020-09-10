@@ -1,0 +1,52 @@
+# Copyright (c) 2013 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("offscreen") {
+  sources = [
+    "electron.h",
+    "offscreen.cc",
+    "offscreen.h",
+  ]
+
+  include_dirs = [
+    "//electron",
+    "//electron/native_mate",
+    "//third_party/skia",
+  ]
+
+  deps = [
+    "//base",
+  ]
+}
+
+source_set("gles2_c_lib") {
+  sources = [
+    "//gpu/command_buffer/client/gles2_c_lib.cc",
+    "//gpu/command_buffer/client/gles2_c_lib_autogen.h",
+    "//gpu/command_buffer/client/gles2_c_lib_export.h",
+    "//gpu/command_buffer/client/gles2_lib.cc",
+    "//gpu/command_buffer/client/gles2_lib.h",
+  ]
+  defines = [
+    "GLES2_C_LIB_IMPLEMENTATION",
+    "GLES2_CONFORMANCE_TESTS=1",
+    "GL_APICALL=__declspec(dllexport)",
+  ]
+
+  deps = [
+    "//base",
+    "//base/third_party/dynamic_annotations",
+    "//gpu/command_buffer/client:gles2_interface",
+    "//gpu/command_buffer/common",
+  ]
+}
+
+group("native_api") {
+  public_deps = [
+    ":gles2_c_lib",
+    ":offscreen",
+    "//electron/native_api/GLES2",
+    "//electron/native_api/egl",
+  ]
+}

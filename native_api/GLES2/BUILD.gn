@@ -1,0 +1,18 @@
+# Copyright 2015 The Chromium Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+source_set("GLES2") {
+  sources = [
+    "gl2.cc",
+  ]
+
+  defines = [
+    "GL_APICALL=__declspec(dllexport)",
+    "GL_APIENTRY=",
+  ]
+
+  deps = [
+    "//gpu/command_buffer/client:gles2_implementation_no_check",
+  ]
+}
