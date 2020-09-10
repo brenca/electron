@@ -293,6 +293,11 @@ bool Converter<blink::WebMouseWheelEvent>::FromV8(
     return false;
   if (!ConvertFromV8(isolate, val, static_cast<blink::WebMouseEvent*>(out)))
     return false;
+  float x = 0.f;
+  float y = 0.f;
+  if (!dict.Get("x", &x) || !dict.Get("y", &y))
+    return false;
+  out->SetPositionInWidget(x, y);
   dict.Get("deltaX", &out->delta_x);
   dict.Get("deltaY", &out->delta_y);
   dict.Get("wheelTicksX", &out->wheel_ticks_x);
