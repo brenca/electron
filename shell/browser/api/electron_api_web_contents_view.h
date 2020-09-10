@@ -25,6 +25,8 @@ class WebContentsView : public View, public content::WebContentsObserver {
   static void BuildPrototype(v8::Isolate* isolate,
                              v8::Local<v8::FunctionTemplate> prototype);
 
+  int32_t ID() const;
+
  protected:
   WebContentsView(v8::Isolate* isolate,
                   mate::Handle<WebContents> web_contents,

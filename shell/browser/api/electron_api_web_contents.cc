@@ -101,6 +101,7 @@
 #include "ui/events/base_event_utils.h"
 
 #if BUILDFLAG(ENABLE_OSR)
+#include "shell/browser/api/electron_api_offscreen_window.h"
 #include "shell/browser/osr/osr_render_widget_host_view.h"
 #include "shell/browser/osr/osr_web_contents_view.h"
 #endif
@@ -463,7 +464,9 @@ WebContents::WebContents(v8::Isolate* isolate, const mate::Dictionary& options)
     if (embedder_ && embedder_->IsOffScreen()) {
       auto* view = new OffScreenWebContentsView(
           false, 0.0f,
-          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)),
+          base::BindRepeating(&WebContents::OnTexturePaint,
+                              base::Unretained(this)));
       params.view = view;
       params.delegate_view = view;
 
@@ -483,7 +486,9 @@ WebContents::WebContents(v8::Isolate* isolate, const mate::Dictionary& options)
     content::WebContents::CreateParams params(session->browser_context());
     auto* view = new OffScreenWebContentsView(
         transparent, scaleFactor,
-        base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+        base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)),
+        base::BindRepeating(&WebContents::OnTexturePaint,
+                            base::Unretained(this)));
     params.view = view;
     params.delegate_view = view;
 
@@ -2221,27 +2226,42 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
   } else if (type == blink::WebInputEvent::kMouseWheel) {
     blink::WebMouseWheelEvent mouse_wheel_event;
     if (mate::ConvertFromV8(isolate, input_event, &mouse_wheel_event)) {
+      // Chromium expects phase info in wheel events (and applies a
+      // DCHECK to verify it). See: https://crbug.com/756524.
+      mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      mouse_wheel_event.event_action =
+          blink::WebMouseWheelEvent::EventAction::kScroll;
+      mouse_wheel_event.momentum_phase =
+          blink::WebMouseWheelEvent::kPhaseBlocked;
+      mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
+      mouse_wheel_event.dispatch_type = blink::WebInputEvent::kBlocking;
       if (IsOffScreen()) {
 #if BUILDFLAG(ENABLE_OSR)
         GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
             mouse_wheel_event);
 #endif
       } else {
-        // Chromium expects phase info in wheel events (and applies a
-        // DCHECK to verify it). See: https://crbug.com/756524.
-        mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
-        mouse_wheel_event.dispatch_type = blink::WebInputEvent::kBlocking;
-        rwh->ForwardWheelEvent(mouse_wheel_event);
-
-        // Send a synthetic wheel event with phaseEnded to finish scrolling.
-        mouse_wheel_event.has_synthetic_phase = true;
-        mouse_wheel_event.delta_x = 0;
-        mouse_wheel_event.delta_y = 0;
-        mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
-        mouse_wheel_event.dispatch_type =
-            blink::WebInputEvent::kEventNonBlocking;
         rwh->ForwardWheelEvent(mouse_wheel_event);
       }
+
+      //       // Send a synthetic wheel event with phaseEnded to finish
+      //       scrolling. mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      //       mouse_wheel_event.has_synthetic_phase = true;
+      //       mouse_wheel_event.delta_x = 0;
+      //       mouse_wheel_event.delta_y = 0;
+      //       mouse_wheel_event.wheel_ticks_x = 0;
+      //       mouse_wheel_event.wheel_ticks_y = 0;
+      //       mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
+      //       mouse_wheel_event.dispatch_type =
+      //           blink::WebInputEvent::kEventNonBlocking;
+      //       if (IsOffScreen()) {
+      // #if BUILDFLAG(ENABLE_OSR)
+      //         GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
+      //             mouse_wheel_event);
+      // #endif
+      //       } else {
+      //         rwh->ForwardWheelEvent(mouse_wheel_event);
+      //       }
       return;
     }
   }
@@ -2398,8 +2418,26 @@ bool WebContents::IsOffScreen() const {
 
 #if BUILDFLAG(ENABLE_OSR)
 void WebContents::OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap) {
-  Emit("paint", gin::ConvertToV8(isolate(), dirty_rect),
-       gfx::Image::CreateFrom1xBitmap(bitmap));
+  for (PaintObserver& observer : paint_observers_)
+    observer.OnPaint(dirty_rect, bitmap);
+  // Emit("paint", gin::ConvertToV8(isolate(), dirty_rect),
+  //      gfx::Image::CreateFrom1xBitmap(bitmap));
+}
+
+void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
+                                 const gpu::SyncToken& sync_token,
+                                 const gfx::Rect& content_rect,
+                                 bool is_popup,
+                                 void (*callback)(void*, void*),
+                                 void* context) {
+  if (paint_observers_.might_have_observers()) {
+    for (PaintObserver& observer : paint_observers_)
+      observer.OnTexturePaint(std::move(mailbox), std::move(sync_token),
+                              std::move(content_rect), is_popup, callback,
+                              context);
+  } else {
+    callback(context, nullptr);
+  }
 }
 
 void WebContents::StartPainting() {
@@ -2458,10 +2496,11 @@ void WebContents::Invalidate() {
 
 gfx::Size WebContents::GetSizeForNewRenderView(content::WebContents* wc) {
   if (IsOffScreen() && wc == web_contents()) {
-    auto* relay = NativeWindowRelay::FromWebContents(web_contents());
+    auto* relay = OffscreenWindowRelay::FromWebContents(web_contents());
     if (relay) {
-      auto* owner_window = relay->GetNativeWindow();
-      return owner_window ? owner_window->GetSize() : gfx::Size();
+      auto* offscreen_window = relay->GetOffscreenWindow();
+      return offscreen_window ? offscreen_window->GetInternalSize()
+                              : gfx::Size();
     }
   }
 

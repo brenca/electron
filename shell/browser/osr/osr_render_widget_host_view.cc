@@ -56,6 +56,10 @@ namespace {
 const float kDefaultScaleFactor = 1.0;
 const float kAutoScaleFactor = 0.0f;
 
+base::TimeDelta TimeDeltaFromHz(double frequency) {
+  return base::TimeDelta::FromSeconds(1) / frequency;
+}
+
 ui::MouseEvent UiMouseEventFromWebMouseEvent(blink::WebMouseEvent event) {
   ui::EventType type = ui::EventType::ET_UNKNOWN;
   switch (event.GetType()) {
@@ -172,6 +176,7 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
     bool painting,
     int frame_rate,
     const OnPaintCallback& callback,
+    const OnTexturePaintCallback& texture_callback,
     content::RenderWidgetHost* host,
     OffScreenRenderWidgetHostView* parent_host_view,
     gfx::Size initial_size,
@@ -181,6 +186,7 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
       parent_host_view_(parent_host_view),
       transparent_(transparent),
       callback_(callback),
+      texture_callback_(texture_callback),
       frame_rate_(frame_rate),
       size_(initial_size),
       painting_(painting),
@@ -225,17 +231,37 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
   compositor_->SetDelegate(this);
   compositor_->SetRootLayer(root_layer_.get());
 
+  // time_source_ = std::make_unique<viz::DelayBasedTimeSource>(
+  //     compositor_->task_runner().get());
+  // time_source_->SetClient(this);
+  //
+  // background_time_source_ = std::make_unique<viz::DelayBasedTimeSource>(
+  //     compositor_->task_runner().get());
+  // background_time_source_->SetClient(this);
+  // background_time_source_->SetTimebaseAndInterval(
+  //   base::TimeTicks::Now(),
+  //   TimeDeltaFromHz(0.2));
+
   ResizeRootLayer(false);
   render_widget_host_->SetView(this);
   InstallTransparency();
 
-  if (content::GpuDataManager::GetInstance()->HardwareAccelerationEnabled()) {
-    video_consumer_ = std::make_unique<OffScreenVideoConsumer>(
-        this, base::BindRepeating(&OffScreenRenderWidgetHostView::OnPaint,
-                                  weak_ptr_factory_.GetWeakPtr()));
-    video_consumer_->SetActive(IsPainting());
-    video_consumer_->SetFrameRate(GetFrameRate());
-  }
+  render_widget_host_->GetProcess()->SetPriorityOverride(true);
+
+  // if (content::GpuDataManager::GetInstance()->HardwareAccelerationEnabled())
+  // {
+  //   video_consumer_ = std::make_unique<OffScreenVideoConsumer>(
+  //       this,
+  //       base::BindRepeating(&OffScreenRenderWidgetHostView::OnPaint,
+  //                           weak_ptr_factory_.GetWeakPtr()),
+  //       base::BindRepeating(&OffScreenRenderWidgetHostView::OnTexturePaint,
+  //                           weak_ptr_factory_.GetWeakPtr()));
+  //   video_consumer_->SetActive(IsPainting());
+  //   video_consumer_->SetFrameRate(GetFrameRate());
+  // }
+
+  // time_source_->SetActive(painting_);
+  // background_time_source_->SetActive(!painting_);
 
   // Let the page-level input event router know about our surface ID
   // namespace for surface-based hit testing.
@@ -247,6 +273,9 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
 }
 
 OffScreenRenderWidgetHostView::~OffScreenRenderWidgetHostView() {
+  // time_source_->SetActive(false);
+  // background_time_source_->SetActive(false);
+
   // Marking the DelegatedFrameHost as removed from the window hierarchy is
   // necessary to remove all connections to its old ui::Compositor.
   if (is_showing_)
@@ -264,6 +293,29 @@ OffScreenRenderWidgetHostView::CreateBrowserAccessibilityManager(
     content::BrowserAccessibilityDelegate*,
     bool) {
   return nullptr;
+}
+
+void OffScreenRenderWidgetHostView::OnTimerTick() {
+  // LOG(INFO) << compositor_ << can_send_frame_ << '\n';
+  if (compositor_ && can_send_frame_) {
+    can_send_frame_ = false;
+
+    auto args = viz::BeginFrameArgs::Create(
+        BEGINFRAME_FROM_HERE, begin_frame_source_.source_id(),
+        begin_frame_sequence_number_, base::TimeTicks::Now(), base::TimeTicks(),
+        TimeDeltaFromHz(frame_rate_), viz::BeginFrameArgs::NORMAL);
+
+    begin_frame_sequence_number_++;
+
+    compositor_->context_factory_private()->IssueExternalBeginFrame(
+        compositor_.get(), args, true,
+        base::BindOnce(&OffScreenRenderWidgetHostView::OnFrameAck,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+}
+
+void OffScreenRenderWidgetHostView::OnFrameAck(const viz::BeginFrameAck& ack) {
+  can_send_frame_ = true;
 }
 
 void OffScreenRenderWidgetHostView::InitAsChild(gfx::NativeView) {
@@ -439,6 +491,10 @@ void OffScreenRenderWidgetHostView::InitAsPopup(
       base::BindRepeating(&OffScreenRenderWidgetHostView::OnPopupPaint,
                           parent_host_view_->weak_ptr_factory_.GetWeakPtr());
 
+  parent_texture_callback_ =
+      base::BindRepeating(&OffScreenRenderWidgetHostView::OnPopupTexturePaint,
+                          parent_host_view_->weak_ptr_factory_.GetWeakPtr());
+
   popup_position_ = pos;
 
   ResizeRootLayer(false);
@@ -559,7 +615,8 @@ OffScreenRenderWidgetHostView::CreateViewForWidget(
 
   return new OffScreenRenderWidgetHostView(
       transparent_, true, embedder_host_view->GetFrameRate(), callback_,
-      render_widget_host, embedder_host_view, size(), GetScaleFactor());
+      texture_callback_, render_widget_host, embedder_host_view, size(),
+      GetScaleFactor());
 }
 
 const viz::FrameSinkId& OffScreenRenderWidgetHostView::GetFrameSinkId() const {
@@ -595,6 +652,9 @@ void OffScreenRenderWidgetHostView::CancelWidget() {
 
   if (parent_host_view_) {
     if (parent_host_view_->popup_host_view_ == this) {
+      parent_texture_callback_.Run(gpu::Mailbox(), gpu::SyncToken(),
+                                   gfx::Rect(), nullptr, nullptr);
+
       parent_host_view_->set_popup_host_view(nullptr);
     } else if (parent_host_view_->child_host_view_ == this) {
       parent_host_view_->set_child_host_view(nullptr);
@@ -632,6 +692,8 @@ OffScreenRenderWidgetHostView::CreateHostDisplayClient(
   host_display_client_ = new OffScreenHostDisplayClient(
       gfx::kNullAcceleratedWidget,
       base::BindRepeating(&OffScreenRenderWidgetHostView::OnPaint,
+                          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(&OffScreenRenderWidgetHostView::OnTexturePaint,
                           weak_ptr_factory_.GetWeakPtr()));
   host_display_client_->SetActive(IsPainting());
   return base::WrapUnique(host_display_client_);
@@ -648,7 +710,7 @@ bool OffScreenRenderWidgetHostView::InstallTransparency() {
 
 void OffScreenRenderWidgetHostView::SetNeedsBeginFrames(
     bool needs_begin_frames) {
-  SetupFrameRate(true);
+  SetupFrameRate();
 
   if (host_display_client_) {
     host_display_client_->SetActive(IsPainting());
@@ -687,6 +749,38 @@ void OffScreenRenderWidgetHostView::OnPaint(const gfx::Rect& damage_rect,
     }
   } else {
     CompositeFrame(damage_rect);
+  }
+}
+
+void OffScreenRenderWidgetHostView::OnPopupTexturePaint(
+    const gpu::Mailbox& mailbox,
+    const gpu::SyncToken& sync_token,
+    const gfx::Rect& content_rect,
+    void (*callback)(void*, void*),
+    void* context) {
+  texture_callback_.Run(std::move(mailbox), std::move(sync_token),
+                        std::move(content_rect), true, callback, context);
+}
+
+void OffScreenRenderWidgetHostView::OnTexturePaint(
+    const gpu::Mailbox& mailbox,
+    const gpu::SyncToken& sync_token,
+    const gfx::Rect& content_rect,
+    void (*callback)(void*, void*),
+    void* context) {
+  if (!IsPopupWidget()) {
+    texture_callback_.Run(std::move(mailbox), std::move(sync_token),
+                          std::move(content_rect), false, callback, context);
+  } else if (parent_texture_callback_) {
+    gfx::Rect rect_in_pixels =
+        gfx::ConvertRectToPixel(GetScaleFactor(), popup_position_);
+
+    parent_texture_callback_.Run(
+        std::move(mailbox), std::move(sync_token),
+        gfx::Rect(rect_in_pixels.origin(), content_rect.size()), callback,
+        context);
+  } else {
+    // TODO: fix this
   }
 }
 
@@ -849,18 +943,13 @@ void OffScreenRenderWidgetHostView::SendMouseWheelEvent(
     }
   }
 
-  blink::WebMouseWheelEvent mouse_wheel_event(event);
-
   if (!IsPopupWidget() && popup_host_view_) {
     if (popup_host_view_->popup_position_.Contains(
-            mouse_wheel_event.PositionInWidget().x,
-            mouse_wheel_event.PositionInWidget().y)) {
-      blink::WebMouseWheelEvent popup_mouse_wheel_event(mouse_wheel_event);
+            event.PositionInWidget().x, event.PositionInWidget().y)) {
+      blink::WebMouseWheelEvent popup_mouse_wheel_event(event);
       popup_mouse_wheel_event.SetPositionInWidget(
-          mouse_wheel_event.PositionInWidget().x -
-              popup_host_view_->popup_position_.x(),
-          mouse_wheel_event.PositionInWidget().y -
-              popup_host_view_->popup_position_.y());
+          event.PositionInWidget().x - popup_host_view_->popup_position_.x(),
+          event.PositionInWidget().y - popup_host_view_->popup_position_.y());
       popup_mouse_wheel_event.SetPositionInScreen(
           popup_mouse_wheel_event.PositionInWidget().x,
           popup_mouse_wheel_event.PositionInWidget().y);
@@ -879,7 +968,8 @@ void OffScreenRenderWidgetHostView::SendMouseWheelEvent(
   }
 
   if (render_widget_host_ && render_widget_host_->GetView()) {
-    blink::WebMouseWheelEvent mouse_wheel_event(event);
+    blink::WebMouseWheelEvent& mouse_wheel_event =
+        const_cast<blink::WebMouseWheelEvent&>(event);
 
     mouse_wheel_phase_handler_.SendWheelEndForTouchpadScrollingIfNeeded(false);
     mouse_wheel_phase_handler_.AddPhaseIfNeededAndScheduleEndEvent(
@@ -916,6 +1006,9 @@ bool OffScreenRenderWidgetHostView::ShouldRouteEvents() const {
 void OffScreenRenderWidgetHostView::SetPainting(bool painting) {
   painting_ = painting;
 
+  // time_source_->SetActive(painting_);
+  // background_time_source_->SetActive(!painting_);
+
   if (popup_host_view_) {
     popup_host_view_->SetPainting(painting);
   }
@@ -948,7 +1041,7 @@ void OffScreenRenderWidgetHostView::SetFrameRate(int frame_rate) {
     frame_rate_ = frame_rate;
   }
 
-  SetupFrameRate(true);
+  SetupFrameRate();
 
   if (video_consumer_) {
     video_consumer_->SetFrameRate(GetFrameRate());
@@ -993,16 +1086,16 @@ OffScreenRenderWidgetHostView::GetDelegatedFrameHost() const {
   return delegated_frame_host_.get();
 }
 
-void OffScreenRenderWidgetHostView::SetupFrameRate(bool force) {
-  if (!force && frame_rate_threshold_us_ != 0)
-    return;
-
-  frame_rate_threshold_us_ = 1000000 / frame_rate_;
+void OffScreenRenderWidgetHostView::SetupFrameRate() {
+  // if (time_source_) {
+  //   time_source_->SetTimebaseAndInterval(
+  //     base::TimeTicks::Now(),
+  //     TimeDeltaFromHz(frame_rate_));
+  // }
 
   if (compositor_) {
-    compositor_->SetDisplayVSyncParameters(
-        base::TimeTicks::Now(),
-        base::TimeDelta::FromMicroseconds(frame_rate_threshold_us_));
+    compositor_->SetDisplayVSyncParameters(base::TimeTicks::Now(),
+                                           TimeDeltaFromHz(frame_rate_));
   }
 }
 
@@ -1011,7 +1104,7 @@ void OffScreenRenderWidgetHostView::Invalidate() {
 }
 
 void OffScreenRenderWidgetHostView::ResizeRootLayer(bool force) {
-  SetupFrameRate(false);
+  SetupFrameRate();
 
   display::Display display =
       display::Screen::GetScreen()->GetDisplayNearestView(GetNativeView());
@@ -1020,12 +1113,7 @@ void OffScreenRenderWidgetHostView::ResizeRootLayer(bool force) {
 
   current_device_scale_factor_ = scaleFactor;
 
-  gfx::Size size;
-  if (!IsPopupWidget())
-    size = GetViewBounds().size();
-  else
-    size = popup_position_.size();
-
+  gfx::Size size = GetViewBounds().size();
   if (!force && !scaleFactorDidChange &&
       size == GetRootLayer()->bounds().size())
     return;

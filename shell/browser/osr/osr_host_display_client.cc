@@ -8,12 +8,16 @@
 
 #include "components/viz/common/resources/resource_format.h"
 #include "components/viz/common/resources/resource_sizes.h"
+#include "components/viz/common/resources/single_release_callback.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/platform_handle.h"
 #include "skia/ext/platform_canvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/src/core/SkDevice.h"
 #include "ui/gfx/skia_util.h"
+
+#include "electron/native_api/offscreen.h"
 
 #if defined(OS_WIN)
 #include "skia/ext/skia_utils_win.h"
@@ -79,8 +83,11 @@ void LayeredWindowUpdater::Draw(const gfx::Rect& damage_rect,
 
 OffScreenHostDisplayClient::OffScreenHostDisplayClient(
     gfx::AcceleratedWidget widget,
-    OnPaintCallback callback)
-    : viz::HostDisplayClient(widget), callback_(callback) {}
+    OnPaintCallback callback,
+    OnTexturePaintCallbackInternal texture_callback)
+    : viz::HostDisplayClient(widget),
+      callback_(callback),
+      texture_callback_(texture_callback) {}
 OffScreenHostDisplayClient::~OffScreenHostDisplayClient() = default;
 
 void OffScreenHostDisplayClient::SetActive(bool active) {
@@ -92,6 +99,52 @@ void OffScreenHostDisplayClient::SetActive(bool active) {
 
 void OffScreenHostDisplayClient::IsOffscreen(IsOffscreenCallback callback) {
   std::move(callback).Run(true);
+}
+
+void OffScreenHostDisplayClient::BackingTextureCreated(
+    const gpu::Mailbox& mailbox) {
+  mailbox_ = mailbox;
+}
+
+void OffScreenHostDisplayClient::OnSwapBuffers(
+    const gfx::Size& size,
+    const gpu::SyncToken& token,
+    mojo::PendingRemote<viz::mojom::SingleReleaseCallback> callback) {
+  texture_rect_ = gfx::Rect(size);
+
+  struct FramePinner {
+    mojo::PendingRemote<viz::mojom::SingleReleaseCallback> releaser;
+  };
+
+  texture_callback_.Run(
+      std::move(mailbox_), std::move(token), std::move(texture_rect_),
+      [](void* context, void* token) {
+        FramePinner* pinner = static_cast<FramePinner*>(context);
+
+        mojo::Remote<viz::mojom::SingleReleaseCallback> callback_remote(
+            std::move(pinner->releaser));
+
+        electron::api::gpu::SyncToken* api_sync_token =
+            static_cast<electron::api::gpu::SyncToken*>(token);
+
+        if (api_sync_token != nullptr) {
+          gpu::SyncToken sync_token(
+              (gpu::CommandBufferNamespace)api_sync_token->namespace_id,
+              gpu::CommandBufferId::FromUnsafeValue(
+                  api_sync_token->command_buffer_id),
+              api_sync_token->release_count);
+          if (api_sync_token->verified_flush) {
+            sync_token.SetVerifyFlush();
+          }
+
+          callback_remote->Run(sync_token, false);
+        } else {
+          callback_remote->Run(gpu::SyncToken(), false);
+        }
+
+        delete pinner;
+      },
+      new FramePinner{std::move(callback)});
 }
 
 void OffScreenHostDisplayClient::CreateLayeredWindowUpdater(

@@ -110,6 +110,10 @@ void WebContentsView::BuildPrototype(
     v8::Isolate* isolate,
     v8::Local<v8::FunctionTemplate> prototype) {}
 
+int32_t WebContentsView::ID() const {
+  return api_web_contents_->ID();
+}
+
 }  // namespace api
 
 }  // namespace electron

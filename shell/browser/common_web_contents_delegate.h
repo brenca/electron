@@ -30,6 +30,10 @@ class WebDialogHelper;
 
 #if BUILDFLAG(ENABLE_OSR)
 class OffScreenWebContentsView;
+
+namespace api {
+class OffscreenWindow;
+}
 #endif
 
 class CommonWebContentsDelegate : public content::WebContentsDelegate,
@@ -49,6 +53,10 @@ class CommonWebContentsDelegate : public content::WebContentsDelegate,
   void SetOwnerWindow(NativeWindow* owner_window);
   void SetOwnerWindow(content::WebContents* web_contents,
                       NativeWindow* owner_window);
+
+#if BUILDFLAG(ENABLE_OSR)
+  void SetOffscreenWindow(api::OffscreenWindow* offscreen_window);
+#endif
 
   // Returns the WebContents managed by this delegate.
   content::WebContents* GetWebContents() const;

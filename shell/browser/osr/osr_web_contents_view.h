@@ -5,8 +5,7 @@
 #ifndef SHELL_BROWSER_OSR_OSR_WEB_CONTENTS_VIEW_H_
 #define SHELL_BROWSER_OSR_OSR_WEB_CONTENTS_VIEW_H_
 
-#include "shell/browser/native_window.h"
-#include "shell/browser/native_window_observer.h"
+#include "shell/browser/api/electron_api_offscreen_window.h"
 
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"  // nogncheck
 #include "content/browser/web_contents/web_contents_view.h"  // nogncheck
@@ -25,17 +24,18 @@ namespace electron {
 
 class OffScreenWebContentsView : public content::WebContentsView,
                                  public content::RenderViewHostDelegateView,
-                                 public NativeWindowObserver {
+                                 public api::OffscreenWindow::Observer {
  public:
   OffScreenWebContentsView(bool transparent,
                            float scale_factor,
-                           const OnPaintCallback& callback);
+                           const OnPaintCallback& callback,
+                           const OnTexturePaintCallback& texture_callback);
   ~OffScreenWebContentsView() override;
 
   void SetWebContents(content::WebContents*);
-  void SetNativeWindow(NativeWindow* window);
+  void SetOffscreenWindow(api::OffscreenWindow* window);
 
-  // NativeWindowObserver:
+  // api::OffscreenWindow::Observer:
   void OnWindowResize() override;
   void OnWindowClosed() override;
 
@@ -94,13 +94,14 @@ class OffScreenWebContentsView : public content::WebContentsView,
 
   OffScreenRenderWidgetHostView* GetView() const;
 
-  NativeWindow* native_window_;
+  api::OffscreenWindow* offscreen_window_;
 
   const bool transparent_;
   float scale_factor_;
   bool painting_ = true;
   int frame_rate_ = 60;
   OnPaintCallback callback_;
+  OnTexturePaintCallback texture_callback_;
 
   // Weak refs.
   content::WebContents* web_contents_ = nullptr;

@@ -18,6 +18,12 @@
 namespace electron {
 
 typedef base::Callback<void(const gfx::Rect&, const SkBitmap&)> OnPaintCallback;
+typedef base::RepeatingCallback<void(const gpu::Mailbox&,
+                                     const gpu::SyncToken&,
+                                     const gfx::Rect&,
+                                     void (*)(void*, void*),
+                                     void*)>
+    OnTexturePaintCallbackInternal;
 
 class LayeredWindowUpdater : public viz::mojom::LayeredWindowUpdater {
  public:
@@ -48,14 +54,22 @@ class LayeredWindowUpdater : public viz::mojom::LayeredWindowUpdater {
 
 class OffScreenHostDisplayClient : public viz::HostDisplayClient {
  public:
-  explicit OffScreenHostDisplayClient(gfx::AcceleratedWidget widget,
-                                      OnPaintCallback callback);
+  OffScreenHostDisplayClient(gfx::AcceleratedWidget widget,
+                             OnPaintCallback callback,
+                             OnTexturePaintCallbackInternal texture_callback);
   ~OffScreenHostDisplayClient() override;
 
   void SetActive(bool active);
 
  private:
   void IsOffscreen(IsOffscreenCallback callback) override;
+
+  void BackingTextureCreated(const gpu::Mailbox& mailbox) override;
+
+  void OnSwapBuffers(
+      const gfx::Size& size,
+      const gpu::SyncToken& token,
+      mojo::PendingRemote<viz::mojom::SingleReleaseCallback>) override;
 
 #if defined(OS_MACOSX)
   void OnDisplayReceivedCALayerParams(
@@ -72,7 +86,13 @@ class OffScreenHostDisplayClient : public viz::HostDisplayClient {
 
   std::unique_ptr<LayeredWindowUpdater> layered_window_updater_;
   OnPaintCallback callback_;
+  OnTexturePaintCallbackInternal texture_callback_;
   bool active_ = false;
+
+  gfx::Rect texture_rect_;
+
+  gpu::Mailbox mailbox_;
+  gpu::SyncToken token_;
 
   DISALLOW_COPY_AND_ASSIGN(OffScreenHostDisplayClient);
 };

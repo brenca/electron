@@ -134,6 +134,30 @@ class WebContents : public mate::TrackableObject<WebContents>,
     OFF_SCREEN,       // Used for offscreen rendering
   };
 
+  class PaintObserver : public base::CheckedObserver {
+   public:
+    virtual void OnPaint(const gfx::Rect& dirty_rect,
+                         const SkBitmap& bitmap) = 0;
+    virtual void OnTexturePaint(const ::gpu::Mailbox& mailbox,
+                                const ::gpu::SyncToken& sync_token,
+                                const gfx::Rect& content_rect,
+                                bool is_popup,
+                                void (*callback)(void*, void*),
+                                void* context) = 0;
+
+   protected:
+    ~PaintObserver() override {}
+  };
+
+  void AddPaintObserver(PaintObserver* obs) {
+    paint_observers_.AddObserver(obs);
+  }
+  void RemovePaintObserver(PaintObserver* obs) {
+    // Trying to remove from an empty collection leads to an access violation
+    if (paint_observers_.might_have_observers())
+      paint_observers_.RemoveObserver(obs);
+  }
+
   // Create a new WebContents and return the V8 wrapper of it.
   static mate::Handle<WebContents> Create(v8::Isolate* isolate,
                                           const mate::Dictionary& options);
@@ -308,6 +332,12 @@ class WebContents : public mate::TrackableObject<WebContents>,
   bool IsOffScreen() const;
 #if BUILDFLAG(ENABLE_OSR)
   void OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap);
+  void OnTexturePaint(const gpu::Mailbox& mailbox,
+                      const gpu::SyncToken& sync_token,
+                      const gfx::Rect& content_rect,
+                      bool is_popup,
+                      void (*callback)(void*, void*),
+                      void* context);
   void StartPainting();
   void StopPainting();
   bool IsPainting() const;
@@ -623,6 +653,8 @@ class WebContents : public mate::TrackableObject<WebContents>,
 
   // Observers of this WebContents.
   base::ObserverList<ExtendedWebContentsObserver> observers_;
+
+  base::ObserverList<PaintObserver> paint_observers_;
 
   // The ID of the process of the currently committed RenderViewHost.
   // -1 means no speculative RVH has been committed yet.

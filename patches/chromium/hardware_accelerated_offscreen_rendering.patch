@@ -1,0 +1,339 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Thu, 10 Sep 2020 10:59:30 +0200
+Subject: hardware_accelerated_offscreen_rendering
+
+
+diff --git a/components/viz/common/resources/single_release_callback.h b/components/viz/common/resources/single_release_callback.h
+index fe28abb6703057dac6c5b138aa5351cea3ab7c67..1eb2d9bb7fa43658ff7e9c610bd44a73f2a7afdc 100644
+--- a/components/viz/common/resources/single_release_callback.h
++++ b/components/viz/common/resources/single_release_callback.h
+@@ -10,18 +10,20 @@
+ #include "base/memory/ptr_util.h"
+ #include "components/viz/common/resources/release_callback.h"
+ #include "components/viz/common/viz_common_export.h"
++#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
+
+ namespace viz {
+
+-class VIZ_COMMON_EXPORT SingleReleaseCallback {
++class VIZ_COMMON_EXPORT SingleReleaseCallback
++    : public mojom::SingleReleaseCallback {
+  public:
+   static std::unique_ptr<SingleReleaseCallback> Create(ReleaseCallback cb) {
+     return base::WrapUnique(new SingleReleaseCallback(std::move(cb)));
+   }
+
+-  ~SingleReleaseCallback();
++  ~SingleReleaseCallback() override;
+
+-  void Run(const gpu::SyncToken& sync_token, bool is_lost);
++  void Run(const gpu::SyncToken& sync_token, bool is_lost) override;
+
+  private:
+   explicit SingleReleaseCallback(ReleaseCallback callback);
+diff --git a/components/viz/host/host_display_client.h b/components/viz/host/host_display_client.h
+index 4437a7875076ef5a99ddcd767036ec37c2d48d44..062056b44a75dc58faab3b343eda6ca076dd4417 100644
+--- a/components/viz/host/host_display_client.h
++++ b/components/viz/host/host_display_client.h
+@@ -35,6 +35,13 @@ class VIZ_HOST_EXPORT HostDisplayClient : public mojom::DisplayClient {
+   // mojom::DisplayClient implementation:
+   void IsOffscreen(IsOffscreenCallback callback) override;
+
++  void BackingTextureCreated(const gpu::Mailbox& mailbox) override {}
++
++  void OnSwapBuffers(
++      const gfx::Size& size,
++      const gpu::SyncToken& token,
++      mojo::PendingRemote<viz::mojom::SingleReleaseCallback>) override {}
++
+ #if defined(OS_MACOSX)
+   void OnDisplayReceivedCALayerParams(
+       const gfx::CALayerParams& ca_layer_params) override;
+diff --git a/components/viz/service/display_embedder/gl_output_surface_offscreen.cc b/components/viz/service/display_embedder/gl_output_surface_offscreen.cc
+index 33dcee3d2ab3fcf065df1b877d522b3f4bd3cd44..bc5455cc28a00c347a8af7f357271db490e52ee4 100644
+--- a/components/viz/service/display_embedder/gl_output_surface_offscreen.cc
++++ b/components/viz/service/display_embedder/gl_output_surface_offscreen.cc
+@@ -8,12 +8,14 @@
+
+ #include "base/bind.h"
+ #include "components/viz/common/resources/resource_format_utils.h"
++#include "components/viz/common/resources/single_release_callback.h"
+ #include "components/viz/service/display/output_surface_client.h"
+ #include "components/viz/service/display/output_surface_frame.h"
+ #include "gpu/command_buffer/client/context_support.h"
+ #include "gpu/command_buffer/client/gles2_interface.h"
+ #include "gpu/command_buffer/client/shared_image_interface.h"
+ #include "gpu/command_buffer/common/shared_image_usage.h"
++#include "mojo/public/cpp/bindings/self_owned_receiver.h"
+ #include "third_party/khronos/GLES2/gl2.h"
+ #include "third_party/khronos/GLES2/gl2ext.h"
+ #include "ui/gl/gl_utils.h"
+@@ -53,7 +55,9 @@ void GLOutputSurfaceOffscreen::EnsureBackbuffer() {
+                                       color_space_, flags);
+
+     // Ensure mailbox is valid before using it.
+-    gl->WaitSyncTokenCHROMIUM(sii->GenUnverifiedSyncToken().GetConstData());
++    gpu::SyncToken token;
++    gl->GenUnverifiedSyncTokenCHROMIUM(token.GetData());
++    gl->WaitSyncTokenCHROMIUM(token.GetConstData());
+
+     texture_id_ = gl->CreateAndTexStorage2DSharedImageCHROMIUM(mailbox_.name);
+
+@@ -61,6 +65,10 @@ void GLOutputSurfaceOffscreen::EnsureBackbuffer() {
+     gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+     gl->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_TEXTURE_2D, texture_id_, 0);
++
++    if (display_client_) {
++      display_client_->BackingTextureCreated(mailbox_);
++    }
+   }
+ }
+
+@@ -105,13 +113,41 @@ void GLOutputSurfaceOffscreen::SwapBuffers(OutputSurfaceFrame frame) {
+
+   gpu::gles2::GLES2Interface* gl = context_provider_->ContextGL();
+
+-  gpu::SyncToken sync_token;
+-  gl->GenUnverifiedSyncTokenCHROMIUM(sync_token.GetData());
++  if (texture_id_ && display_client_) {
++    mojo::PendingRemote<mojom::SingleReleaseCallback> callback;
++    mojo::MakeSelfOwnedReceiver(
++        viz::SingleReleaseCallback::Create(base::BindOnce(
++            &GLOutputSurfaceOffscreen::OnFramebufferCopyComplete,
++            weak_ptr_factory_.GetWeakPtr(),
++            std::move(frame.latency_info))),
++        callback.InitWithNewPipeAndPassReceiver());
++
++    gpu::SyncToken sync_token;
++    gl->GenSyncTokenCHROMIUM(sync_token.GetData());
++
++    display_client_->OnSwapBuffers(
++        size_, std::move(sync_token), std::move(callback));
++  } else {
++    gpu::SyncToken sync_token;
++    gl->GenUnverifiedSyncTokenCHROMIUM(sync_token.GetData());
++
++    context_provider_->ContextSupport()->SignalSyncToken(
++        sync_token,
++        base::BindOnce(&GLOutputSurfaceOffscreen::OnSwapBuffersComplete,
++                       weak_ptr_factory_.GetWeakPtr(),
++                       std::move(frame.latency_info)));
++  }
++}
++
++void GLOutputSurfaceOffscreen::OnFramebufferCopyComplete(
++    std::vector<ui::LatencyInfo> latency_info,
++    const gpu::SyncToken& sync_token,
++    bool is_lost) {
+   context_provider_->ContextSupport()->SignalSyncToken(
+       sync_token,
+       base::BindOnce(&GLOutputSurfaceOffscreen::OnSwapBuffersComplete,
+                      weak_ptr_factory_.GetWeakPtr(),
+-                     std::move(frame.latency_info)));
++                     std::move(latency_info)));
+ }
+
+ void GLOutputSurfaceOffscreen::OnSwapBuffersComplete(
+diff --git a/components/viz/service/display_embedder/gl_output_surface_offscreen.h b/components/viz/service/display_embedder/gl_output_surface_offscreen.h
+index 74afee81c980ddf8962a2c023776a86db6ab1562..1780ab75c0b9d970066fe197d5721f21dfbdb4f8 100644
+--- a/components/viz/service/display_embedder/gl_output_surface_offscreen.h
++++ b/components/viz/service/display_embedder/gl_output_surface_offscreen.h
+@@ -10,6 +10,7 @@
+ #include "components/viz/common/frame_sinks/begin_frame_source.h"
+ #include "components/viz/service/display_embedder/gl_output_surface.h"
+ #include "components/viz/service/display_embedder/viz_process_context_provider.h"
++#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
+ #include "components/viz/service/viz_service_export.h"
+ #include "gpu/command_buffer/common/mailbox.h"
+ #include "ui/gfx/color_space.h"
+@@ -34,12 +35,21 @@ class VIZ_SERVICE_EXPORT GLOutputSurfaceOffscreen : public GLOutputSurface {
+                bool alpha,
+                bool stencil) override;
+   void SwapBuffers(OutputSurfaceFrame frame) override;
++  void SetDisplayClient(mojom::DisplayClient* display_client) {
++    display_client_ = display_client;
++  }
+
+  private:
++  void OnFramebufferCopyComplete(std::vector<ui::LatencyInfo> latency_info,
++                                 const gpu::SyncToken& sync_token,
++                                 bool is_lost);
++
+   void OnSwapBuffersComplete(std::vector<ui::LatencyInfo> latency_info);
+
+   gpu::Mailbox mailbox_;
+
++  mojom::DisplayClient* display_client_ = nullptr;
++
+   uint32_t fbo_ = 0;
+   uint32_t texture_id_ = 0;
+   gfx::Size size_;
+diff --git a/components/viz/service/display_embedder/output_surface_provider_impl.cc b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+index 1011080626807dd6baf6c08f9b704905cba4e3c8..61ca1769d29f0eb0ba626fff658e88c4ad57ca0a 100644
+--- a/components/viz/service/display_embedder/output_surface_provider_impl.cc
++++ b/components/viz/service/display_embedder/output_surface_provider_impl.cc
+@@ -180,8 +180,11 @@ std::unique_ptr<OutputSurface> OutputSurfaceProviderImpl::CreateOutputSurface(
+     }
+
+     if (surface_handle == gpu::kNullSurfaceHandle) {
+-      output_surface = std::make_unique<GLOutputSurfaceOffscreen>(
+-          std::move(context_provider));
++      auto offscreen_output_surface =
++          std::make_unique<GLOutputSurfaceOffscreen>(
++            std::move(context_provider));
++      offscreen_output_surface->SetDisplayClient(display_client);
++      output_surface = std::move(offscreen_output_surface);
+     } else if (context_provider->ContextCapabilities().surfaceless) {
+ #if defined(USE_OZONE)
+       output_surface = std::make_unique<GLOutputSurfaceBufferQueue>(
+diff --git a/content/browser/browser_main_loop.cc b/content/browser/browser_main_loop.cc
+index bc8031cde18f92c1f5a8c24adb4e654e3c381fd3..ec741f07940c3414b5e9e30d20bbfae1ffde646c 100644
+--- a/content/browser/browser_main_loop.cc
++++ b/content/browser/browser_main_loop.cc
+@@ -1531,7 +1531,8 @@ void BrowserMainLoop::MainMessageLoopRun() {
+   NOTREACHED();
+ #else
+   base::RunLoop run_loop;
+-  parts_->PreDefaultMainMessageLoopRun(run_loop.QuitWhenIdleClosure());
++  if (parts_)
++    parts_->PreDefaultMainMessageLoopRun(run_loop.QuitWhenIdleClosure());
+   run_loop.Run();
+ #endif
+ }
+diff --git a/content/public/common/gpu_stream_constants.h b/content/public/common/gpu_stream_constants.h
+index 7169ea14f8f47c14895d5f2ce24ce436b18efe14..5ce6c21ee3ad57e19acc612069fae99207a6fa32 100644
+--- a/content/public/common/gpu_stream_constants.h
++++ b/content/public/common/gpu_stream_constants.h
+@@ -22,7 +22,7 @@ const gpu::SchedulingPriority kGpuStreamPriorityDefault =
+
+ // Used for UI context and all other browser contexts in the same stream.
+ const gpu::SchedulingPriority kGpuStreamPriorityUI =
+-    gpu::SchedulingPriority::kHigh;
++    gpu::SchedulingPriority::kNormal;
+
+ // Used for renderer video media context.
+ const gpu::SchedulingPriority kGpuStreamPriorityMedia =
+@@ -30,7 +30,7 @@ const gpu::SchedulingPriority kGpuStreamPriorityMedia =
+
+ // Used for renderer raster worker context.
+ const gpu::SchedulingPriority kGpuStreamPriorityWorker =
+-    gpu::SchedulingPriority::kLow;
++    gpu::SchedulingPriority::kNormal;
+
+ }  // namespace content
+
+diff --git a/gpu/GLES2/gl2extchromium.h b/gpu/GLES2/gl2extchromium.h
+index dc411eccedf955aafbb72d53f609093302d5a5e9..f1423d6974e10d9b30c4a261ba02954817970d26 100644
+--- a/gpu/GLES2/gl2extchromium.h
++++ b/gpu/GLES2/gl2extchromium.h
+@@ -620,7 +620,7 @@ GL_APICALL void GL_APIENTRY glResizeCHROMIUM(GLuint width,
+                                              GLfloat scale_factor,
+                                              GLenum color_space,
+                                              GLboolean alpha);
+-
++
+ #endif
+ typedef void(GL_APIENTRYP PFNGLRESIZECHROMIUMPROC)(GLuint width,
+                                                    GLuint height,
+@@ -1296,6 +1296,34 @@ typedef void(GL_APIENTRYP PFNGLUNPREMULTIPLYANDDITHERCOPYCHROMIUMPROC)(
+ #define GL_CHROMIUM_shared_image 1
+ #define GL_SHARED_IMAGE_ACCESS_MODE_READ_CHROMIUM 0x8AF6
+ #define GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM 0x8AF7
++
++#ifdef GL_GLEXT_PROTOTYPES
++GL_APICALL GLuint GL_APIENTRY
++glCreateAndTexStorage2DSharedImageCHROMIUM(const GLbyte* mailbox);
++GL_APICALL GLuint GL_APIENTRY
++glCreateAndTexStorage2DSharedImageWithInternalFormatCHROMIUM(
++    const GLbyte* mailbox,
++    GLenum internalformat);
++GL_APICALL void GL_APIENTRY
++glCreateAndTexStorage2DSharedImageINTERNAL(GLuint texture,
++                                           GLenum internalformat,
++                                           const GLbyte* mailbox);
++GL_APICALL void GL_APIENTRY
++glBeginSharedImageAccessDirectCHROMIUM(GLuint texture,
++                                       GLenum mode);
++GL_APICALL void GL_APIENTRY
++glEndSharedImageAccessDirectCHROMIUM(GLuint texture);
++GL_APICALL void GL_APIENTRY
++glBeginBatchReadAccessSharedImageCHROMIUM(void);
++GL_APICALL void GL_APIENTRY
++glEndBatchReadAccessSharedImageCHROMIUM(void);
++GL_APICALL void GL_APIENTRY
++glShallowFinishCHROMIUM (void);
++GL_APICALL void GL_APIENTRY
++glShallowFlushCHROMIUM (void);
++GL_APICALL void GL_APIENTRY
++glOrderingBarrierCHROMIUM(void);
++#endif
+ #endif /* GL_CHROMIUM_shared_image */
+
+ /* GL_CHROMIUM_program_completion_query */
+diff --git a/gpu/ipc/scheduler_sequence.cc b/gpu/ipc/scheduler_sequence.cc
+index 20ed7fd2e9aa96a75570cbc5cfe56733b4130810..269adfefbe9fcdd02c9b74673ea5fab1c2bac8b7 100644
+--- a/gpu/ipc/scheduler_sequence.cc
++++ b/gpu/ipc/scheduler_sequence.cc
+@@ -47,7 +47,7 @@ void SchedulerSequence::DefaultDisallowScheduleTaskOnCurrentThread() {
+ SchedulerSequence::SchedulerSequence(Scheduler* scheduler)
+     : SingleTaskSequence(),
+       scheduler_(scheduler),
+-      sequence_id_(scheduler->CreateSequence(SchedulingPriority::kHigh)) {}
++      sequence_id_(scheduler->CreateSequence(SchedulingPriority::kNormal)) {}
+
+ // Note: this drops tasks not executed yet.
+ SchedulerSequence::~SchedulerSequence() {
+diff --git a/services/viz/privileged/mojom/compositing/display_private.mojom b/services/viz/privileged/mojom/compositing/display_private.mojom
+index 0c6c0d20edf8dad26d9737ca1120e9a66ea27e92..061218ba5e863adb4d62b1ed802f841edec47774 100644
+--- a/services/viz/privileged/mojom/compositing/display_private.mojom
++++ b/services/viz/privileged/mojom/compositing/display_private.mojom
+@@ -15,6 +15,13 @@ import "ui/latency/mojom/latency_info.mojom";
+ import "services/viz/privileged/mojom/compositing/layered_window_updater.mojom";
+ import "services/viz/privileged/mojom/compositing/vsync_parameter_observer.mojom";
+
++import "gpu/ipc/common/mailbox.mojom";
++import "gpu/ipc/common/sync_token.mojom";
++
++interface SingleReleaseCallback {
++  Run(gpu.mojom.SyncToken sync_token, bool is_lost);
++};
++
+ // See ui/compositor/compositor.h: ContextFactoryPrivate.
+ // The DisplayPrivate is used by privileged clients to talk to Display.
+ // DisplayPrivate would eventually replace or be used by ContextFactoryPrivate.
+@@ -79,6 +86,12 @@ interface DisplayClient {
+   [Sync]
+   IsOffscreen() => (bool success);
+
++  BackingTextureCreated(gpu.mojom.Mailbox mailbox);
++
++  OnSwapBuffers(gfx.mojom.Size size,
++                gpu.mojom.SyncToken token,
++                pending_remote<SingleReleaseCallback> callback);
++
+   [EnableIf=is_mac]
+   OnDisplayReceivedCALayerParams(gfx.mojom.CALayerParams ca_layer_params);
+
+diff --git a/ui/gfx/win/rendering_window_manager.cc b/ui/gfx/win/rendering_window_manager.cc
+index 1483e9883c387e35a2fa65ab173e3b297916bb3a..9cd03db57c85148d5d12d07df604461a6750ba3a 100644
+--- a/ui/gfx/win/rendering_window_manager.cc
++++ b/ui/gfx/win/rendering_window_manager.cc
+@@ -28,16 +28,6 @@ void RenderingWindowManager::RegisterChild(HWND parent,
+   if (!child)
+     return;
+
+-  // This can be called from any thread, if we're not on the correct thread then
+-  // PostTask back to the UI thread before doing anything.
+-  if (!task_runner_->BelongsToCurrentThread()) {
+-    task_runner_->PostTask(
+-        FROM_HERE, base::BindOnce(&RenderingWindowManager::RegisterChild,
+-                                  base::Unretained(this), parent, child,
+-                                  expected_child_process_id));
+-    return;
+-  }
+-
+   // Check that |parent| was registered as a HWND that could have a child HWND.
+   auto it = registered_hwnds_.find(parent);
+   if (it == registered_hwnds_.end())

@@ -33,7 +33,6 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/compositor/compositor.h"
-#include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/layer_owner.h"
 #include "ui/gfx/geometry/point.h"
 
@@ -49,21 +48,34 @@ class CursorManager;
 
 namespace electron {
 
-class ElectronCopyFrameGenerator;
-
 class ElectronDelegatedFrameHostClient;
 
 typedef base::Callback<void(const gfx::Rect&, const SkBitmap&)> OnPaintCallback;
+typedef base::Callback<void(const gpu::Mailbox&,
+                            const gpu::SyncToken&,
+                            const gfx::Rect&,
+                            bool,
+                            void (*)(void*, void*),
+                            void*)>
+    OnTexturePaintCallback;
 typedef base::Callback<void(const gfx::Rect&)> OnPopupPaintCallback;
+typedef base::Callback<void(const gpu::Mailbox&,
+                            const gpu::SyncToken&,
+                            const gfx::Rect&,
+                            void (*)(void*, void*),
+                            void*)>
+    OnPopupTexturePaintCallback;
 
 class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
                                       public ui::CompositorDelegate,
+                                      public viz::DelayBasedTimeSourceClient,
                                       public OffscreenViewProxyObserver {
  public:
   OffScreenRenderWidgetHostView(bool transparent,
                                 bool painting,
                                 int frame_rate,
                                 const OnPaintCallback& callback,
+                                const OnTexturePaintCallback& texture_callback,
                                 content::RenderWidgetHost* render_widget_host,
                                 OffScreenRenderWidgetHostView* parent_host_view,
                                 gfx::Size initial_size,
@@ -73,6 +85,10 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   content::BrowserAccessibilityManager* CreateBrowserAccessibilityManager(
       content::BrowserAccessibilityDelegate*,
       bool) override;
+
+  // viz::DelayBasedTimeSourceClient:
+  void OnTimerTick() override;
+  void OnFrameAck(const viz::BeginFrameAck& ack);
 
   // content::RenderWidgetHostView:
   void InitAsChild(gfx::NativeView) override;
@@ -171,6 +187,16 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void ProxyViewDestroyed(OffscreenViewProxy* proxy) override;
 
   void OnPaint(const gfx::Rect& damage_rect, const SkBitmap& bitmap);
+  void OnPopupTexturePaint(const gpu::Mailbox& mailbox,
+                           const gpu::SyncToken& sync_token,
+                           const gfx::Rect& content_rect,
+                           void (*callback)(void*, void*),
+                           void* context);
+  void OnTexturePaint(const gpu::Mailbox& mailbox,
+                      const gpu::SyncToken& sync_token,
+                      const gfx::Rect& content_rect,
+                      void (*callback)(void*, void*),
+                      void* context);
   void OnPopupPaint(const gfx::Rect& damage_rect);
   void OnProxyViewPaint(const gfx::Rect& damage_rect) override;
 
@@ -224,7 +250,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   }
 
  private:
-  void SetupFrameRate(bool force);
+  void SetupFrameRate();
   void ResizeRootLayer(bool force);
 
   viz::FrameSinkId AllocateFrameSinkId();
@@ -243,10 +269,11 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   const bool transparent_;
   OnPaintCallback callback_;
+  OnTexturePaintCallback texture_callback_;
   OnPopupPaintCallback parent_callback_;
+  OnPopupTexturePaintCallback parent_texture_callback_;
 
   int frame_rate_ = 0;
-  int frame_rate_threshold_us_ = 0;
   float manual_device_scale_factor_;
 
   gfx::Size size_;
@@ -269,7 +296,14 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   std::unique_ptr<ui::Layer> root_layer_;
   std::unique_ptr<ui::Compositor> compositor_;
+  std::unique_ptr<viz::DelayBasedTimeSource> time_source_;
+  std::unique_ptr<viz::DelayBasedTimeSource> background_time_source_;
   std::unique_ptr<content::DelegatedFrameHost> delegated_frame_host_;
+
+  bool can_send_frame_ = true;
+
+  uint64_t begin_frame_sequence_number_ =
+      viz::BeginFrameArgs::kStartingFrameNumber;
 
   std::unique_ptr<content::CursorManager> cursor_manager_;
 

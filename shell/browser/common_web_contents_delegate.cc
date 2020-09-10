@@ -46,6 +46,7 @@
 #endif
 
 #if BUILDFLAG(ENABLE_OSR)
+#include "shell/browser/api/electron_api_offscreen_window.h"
 #include "shell/browser/osr/osr_web_contents_view.h"
 #endif
 
@@ -224,12 +225,18 @@ void CommonWebContentsDelegate::SetOwnerWindow(
     owner_window_ = nullptr;
     web_contents->RemoveUserData(NativeWindowRelay::UserDataKey());
   }
+}
+
 #if BUILDFLAG(ENABLE_OSR)
+void CommonWebContentsDelegate::SetOffscreenWindow(
+    api::OffscreenWindow* offscreen_window) {
+  OffscreenWindowRelay::CreateForWebContents(GetWebContents(),
+                                             offscreen_window->GetWeakPtr());
   auto* osr_wcv = GetOffScreenWebContentsView();
   if (osr_wcv)
-    osr_wcv->SetNativeWindow(owner_window);
-#endif
+    osr_wcv->SetOffscreenWindow(offscreen_window);
 }
+#endif
 
 void CommonWebContentsDelegate::ResetManagedWebContents(bool async) {
   if (async) {

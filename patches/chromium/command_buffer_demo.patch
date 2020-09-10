@@ -1,0 +1,1572 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Thu, 10 Sep 2020 11:00:20 +0200
+Subject: command_buffer_demo
+
+
+diff --git a/command_buffer_demo/BUILD.gn b/command_buffer_demo/BUILD.gn
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7f3709c09d34149bb6537048bf882af638d9641
+--- /dev/null
++++ b/command_buffer_demo/BUILD.gn
+@@ -0,0 +1,26 @@
++executable("command_buffer_demo") {
++  sources = [
++    "ChromiumGLES2.cpp",
++  ]
++
++  deps = [
++    "//base",
++    "//chrome/common:constants",
++    "//gpu/command_buffer/common",
++    "//content/public/app:child",
++    "//content/public/browser",
++  ]
++
++  libs = []
++
++  defines = [
++    "COMMAND_BUFFER_GLES_LIB_SUPPORT_ONLY",
++    "EGLAPIENTRY=",
++    "EGL_EGL_PROTOTYPES=0",
++  ]
++  if (current_os == "win") {
++    defines += [ "EGLAPI=__declspec(dllimport)" ]
++  } else {
++    defines += [ "EGLAPI=" ]
++  }
++}
+diff --git a/command_buffer_demo/ChromiumGLES2.cpp b/command_buffer_demo/ChromiumGLES2.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f90c6631ae94a41040eda5fa6c2d353f57c2489
+--- /dev/null
++++ b/command_buffer_demo/ChromiumGLES2.cpp
+@@ -0,0 +1,675 @@
++#include <windows.h>
++
++#include <iostream>
++
++#include "base/base_switches.h"
++#include "base/bind.h"
++#include "base/command_line.h"
++#include "base/feature_list.h"
++#include "base/task/task_traits.h"
++#include "base/task/post_task.h"
++#include "base/time/time.h"
++#include "chrome/common/chrome_paths.h"
++#include "content/browser/gpu/browser_gpu_channel_host_factory.h"
++#include "content/browser/gpu/gpu_process_host.h"
++#include "content/public/app/content_main_delegate.h"
++#include "content/public/app/content_main.h"
++#include "content/public/browser/browser_main_parts.h"
++#include "content/public/browser/content_browser_client.h"
++#include "content/public/browser/gpu_utils.h"
++#include "content/public/common/content_client.h"
++#include "content/public/common/gpu_stream_constants.h"
++#include "gpu/command_buffer/client/gles2_interface.h"
++#include "gpu/command_buffer/common/context_creation_attribs.h"
++#include "services/service_manager/embedder/switches.h"
++#include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
++
++#if defined(OS_WIN)
++#include "base/win/scoped_handle.h"
++#include "base/win/win_util.h"
++#include "content/public/app/sandbox_helper_win.h"
++#include "sandbox/win/src/sandbox_types.h"
++#endif
++
++#define SHADER(Src) #Src
++#define M_PI 3.1415926535897932f
++
++#if defined(OS_WIN)
++void InvalidParameterHandler(const wchar_t*,
++                             const wchar_t*,
++                             const wchar_t*,
++                             unsigned int,
++                             uintptr_t) {
++  // noop.
++}
++#endif
++
++static const GLfloat vertices[] =
++{
++    // front
++    -0.5f, 0.5f, 0.5f,
++    -0.5f, -0.5f, 0.5f,
++    0.5f, 0.5f, 0.5f,
++    0.5f, 0.5f, 0.5f,
++    -0.5f, -0.5f, 0.5f,
++    0.5f, -0.5f, 0.5f,
++
++    // right
++    0.5f, 0.5f, 0.5f,
++    0.5f, -0.5f, 0.5f,
++    0.5f, 0.5f, -0.5f,
++    0.5f, 0.5f, -0.5f,
++    0.5f, -0.5f, 0.5f,
++    0.5f, -0.5f, -0.5f,
++
++    // back
++    0.5f, 0.5f, -0.5f,
++    0.5f, -0.5f, -0.5f,
++    -0.5f, 0.5f, -0.5f,
++    -0.5f, 0.5f, -0.5f,
++    0.5f, -0.5f, -0.5f,
++    -0.5f, -0.5f, -0.5f,
++
++    // left
++    -0.5f, 0.5f, -0.5f,
++    -0.5f, -0.5f, -0.5f,
++    -0.5f, 0.5f, 0.5f,
++    -0.5f, 0.5f, 0.5f,
++    -0.5f, -0.5f, -0.5f,
++    -0.5f, -0.5f, 0.5f,
++
++    // top
++    -0.5f, 0.5f, -0.5f,
++    -0.5f, 0.5f, 0.5f,
++    0.5f, 0.5f, -0.5f,
++    0.5f, 0.5f, -0.5f,
++    -0.5f, 0.5f, 0.5f,
++    0.5f, 0.5f, 0.5f,
++
++    // bottom
++    -0.5f, -0.5f, 0.5f,
++    -0.5f, -0.5f, -0.5f,
++    0.5f, -0.5f, 0.5f,
++    0.5f, -0.5f, 0.5f,
++    -0.5f, -0.5f, -0.5f,
++    0.5f, -0.5f, -0.5f
++};
++
++static const GLfloat colors[] =
++{
++    // front
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++
++    // right
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++
++    // back
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++
++    // left
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++
++    // top
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++
++    // bottom
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++};
++
++typedef struct{
++    GLfloat mat[4][4];
++} glMatrix;
++
++static glMatrix *projectionMat;
++static glMatrix *modelviewMat;
++static glMatrix *mvpMat;
++
++void multMatrix(glMatrix *result, glMatrix *srcA, glMatrix *srcB)
++{
++    glMatrix    tmp;
++    int         i;
++
++    for (i=0; i<4; i++)
++    {
++        tmp.mat[i][0] = (srcA->mat[i][0] * srcB->mat[0][0]) +
++                        (srcA->mat[i][1] * srcB->mat[1][0]) +
++                        (srcA->mat[i][2] * srcB->mat[2][0]) +
++                        (srcA->mat[i][3] * srcB->mat[3][0]) ;
++
++        tmp.mat[i][1] = (srcA->mat[i][0] * srcB->mat[0][1]) +
++                        (srcA->mat[i][1] * srcB->mat[1][1]) +
++                        (srcA->mat[i][2] * srcB->mat[2][1]) +
++                        (srcA->mat[i][3] * srcB->mat[3][1]) ;
++
++        tmp.mat[i][2] = (srcA->mat[i][0] * srcB->mat[0][2]) +
++                        (srcA->mat[i][1] * srcB->mat[1][2]) +
++                        (srcA->mat[i][2] * srcB->mat[2][2]) +
++                        (srcA->mat[i][3] * srcB->mat[3][2]) ;
++
++        tmp.mat[i][3] = (srcA->mat[i][0] * srcB->mat[0][3]) +
++                        (srcA->mat[i][1] * srcB->mat[1][3]) +
++                        (srcA->mat[i][2] * srcB->mat[2][3]) +
++                        (srcA->mat[i][3] * srcB->mat[3][3]) ;
++    }
++    memcpy(result, &tmp, sizeof(glMatrix));
++}
++
++void loadIdentity(glMatrix *result)
++{
++    memset(result, 0x0, sizeof(glMatrix));
++    result->mat[0][0] = 1.0f;
++    result->mat[1][1] = 1.0f;
++    result->mat[2][2] = 1.0f;
++    result->mat[3][3] = 1.0f;
++}
++
++void scaleMatrix(glMatrix *result, GLfloat sx, GLfloat sy, GLfloat sz)
++{
++    result->mat[0][0] *= sx;
++    result->mat[0][1] *= sx;
++    result->mat[0][2] *= sx;
++    result->mat[0][3] *= sx;
++
++    result->mat[1][0] *= sy;
++    result->mat[1][1] *= sy;
++    result->mat[1][2] *= sy;
++    result->mat[1][3] *= sy;
++
++    result->mat[2][0] *= sz;
++    result->mat[2][1] *= sz;
++    result->mat[2][2] *= sz;
++    result->mat[2][3] *= sz;
++}
++
++void rotationMatrix(glMatrix *result, GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
++{
++    GLfloat sinAngle, cosAngle;
++    GLfloat mag = sqrtf(x * x + y * y + z * z);
++
++    sinAngle = sin ( angle * M_PI / 180.0f );
++    cosAngle = cos ( angle * M_PI / 180.0f );
++    if ( mag > 0.0f )
++    {
++        GLfloat xx, yy, zz, xy, yz, zx, xs, ys, zs;
++        GLfloat oneMinusCos;
++        glMatrix rotMat;
++
++        x /= mag;
++        y /= mag;
++        z /= mag;
++
++        xx = x * x;
++        yy = y * y;
++        zz = z * z;
++        xy = x * y;
++        yz = y * z;
++        zx = z * x;
++        xs = x * sinAngle;
++        ys = y * sinAngle;
++        zs = z * sinAngle;
++        oneMinusCos = 1.0f - cosAngle;
++
++        rotMat.mat[0][0] = (oneMinusCos * xx) + cosAngle;
++        rotMat.mat[0][1] = (oneMinusCos * xy) - zs;
++        rotMat.mat[0][2] = (oneMinusCos * zx) + ys;
++        rotMat.mat[0][3] = 0.0F;
++
++        rotMat.mat[1][0] = (oneMinusCos * xy) + zs;
++        rotMat.mat[1][1] = (oneMinusCos * yy) + cosAngle;
++        rotMat.mat[1][2] = (oneMinusCos * yz) - xs;
++        rotMat.mat[1][3] = 0.0F;
++
++        rotMat.mat[2][0] = (oneMinusCos * zx) - ys;
++        rotMat.mat[2][1] = (oneMinusCos * yz) + xs;
++        rotMat.mat[2][2] = (oneMinusCos * zz) + cosAngle;
++        rotMat.mat[2][3] = 0.0F;
++
++        rotMat.mat[3][0] = 0.0F;
++        rotMat.mat[3][1] = 0.0F;
++        rotMat.mat[3][2] = 0.0F;
++        rotMat.mat[3][3] = 1.0F;
++
++        multMatrix( result, &rotMat, result );
++    }
++}
++
++void frustumMatrix(glMatrix *result, float left, float right, float bottom, float top, float nearZ, float farZ)
++{
++    float       deltaX = right - left;
++    float       deltaY = top - bottom;
++    float       deltaZ = farZ - nearZ;
++    glMatrix    frust;
++
++    if ( (nearZ <= 0.0f) || (farZ <= 0.0f) ||
++         (deltaX <= 0.0f) || (deltaY <= 0.0f) || (deltaZ <= 0.0f) )
++            return;
++
++    frust.mat[0][0] = 2.0f * nearZ / deltaX;
++    frust.mat[0][1] = frust.mat[0][2] = frust.mat[0][3] = 0.0f;
++
++    frust.mat[1][1] = 2.0f * nearZ / deltaY;
++    frust.mat[1][0] = frust.mat[1][2] = frust.mat[1][3] = 0.0f;
++
++    frust.mat[2][0] = (right + left) / deltaX;
++    frust.mat[2][1] = (top + bottom) / deltaY;
++    frust.mat[2][2] = -(nearZ + farZ) / deltaZ;
++    frust.mat[2][3] = -1.0f;
++
++    frust.mat[3][2] = -2.0f * nearZ * farZ / deltaZ;
++    frust.mat[3][0] = frust.mat[3][1] = frust.mat[3][3] = 0.0f;
++
++    multMatrix(result, &frust, result);
++}
++
++GLuint
++LoadShader(gpu::gles2::GLES2Interface* gl, GLenum type, const char* shaderSrc) {
++  GLint status = GL_FALSE;
++  GLuint shader = gl->CreateShader(type);
++  if (!shader) {
++    std::cout << gl->GetError() << '\n';
++    return 0;
++  } else {
++    gl->ShaderSource(shader, 1, &shaderSrc, 0);
++    gl->CompileShader(shader);
++    gl->GetShaderiv(shader, GL_COMPILE_STATUS, &status);
++    if (GL_FALSE == status) {
++        GLchar log[256];
++        gl->GetShaderInfoLog(shader, 256, NULL, log);
++        std::cout << log << '\n';
++        gl->DeleteShader(shader);
++    }
++
++    return shader;
++  }
++}
++
++GLuint SetupProgram(gpu::gles2::GLES2Interface* gl) {
++  static const char* vertex_shader_source = SHADER(
++    uniform mat4 u_mvpMat;
++    attribute vec4 a_position;
++    attribute vec4 a_color;
++    varying vec4 v_color;
++    void main()
++    {
++      gl_Position = u_mvpMat * a_position;
++      v_color = a_color;
++    }
++  );
++
++  static const char* fragment_shader_source = SHADER(
++    precision mediump float;
++    varying vec4 v_color;
++    void main()
++    {
++      gl_FragColor = v_color;
++    }
++  );
++
++  GLuint vertex_shader = LoadShader(
++      gl, GL_VERTEX_SHADER, vertex_shader_source);
++  GLuint fragment_shader = LoadShader(
++      gl, GL_FRAGMENT_SHADER, fragment_shader_source);
++  GLuint program = gl->CreateProgram();
++  gl->AttachShader(program, vertex_shader);
++  gl->AttachShader(program, fragment_shader);
++  // Link the program
++  gl->LinkProgram(program);
++  GLint linked = 0;
++  gl->GetProgramiv(program, GL_LINK_STATUS, &linked);
++  if (linked == 0) {
++    char buffer[1024];
++    GLsizei length = 0;
++    gl->GetProgramInfoLog(program, sizeof(buffer), &length, buffer);
++    std::string log(buffer, length);
++    std::cout << log << '\n';
++    gl->DeleteProgram(program);
++    program = 0;
++  }
++
++  gl->DeleteShader(fragment_shader);
++  gl->DeleteShader(vertex_shader);
++
++  return program;
++}
++
++static LRESULT CALLBACK wndProc(HWND wnd, UINT message,
++    WPARAM wParam, LPARAM lParam)
++{
++    RECT rc;
++    int useDefWindowProc = 0;
++    switch (message)
++    {
++    case WM_CLOSE:
++        DestroyWindow(wnd);
++        // gAppAlive = 0;
++        break;
++    case WM_DESTROY:
++        PostQuitMessage(0);
++        // gAppAlive = 0;
++        break;
++    case WM_KEYDOWN:
++        if (wParam == VK_ESCAPE || wParam == VK_RETURN)
++            // gAppAlive = 0;
++        useDefWindowProc = 1;
++        break;
++    case WM_KEYUP:
++        useDefWindowProc = 1;
++        break;
++    case WM_SIZE:
++        GetClientRect(wnd, &rc);
++        // sWindowWidth = rc.right;
++        // sWindowHeight = rc.bottom;
++        break;
++    default:
++        useDefWindowProc = 1;
++    }
++    if (useDefWindowProc)
++        return DefWindowProc(wnd, message, wParam, lParam);
++    return 0;
++}
++
++HWND createWindow(int width, int height) {
++	HINSTANCE hInstance = GetModuleHandle(NULL);
++	WNDCLASSEX wcex;
++
++	wcex.cbSize = sizeof(WNDCLASSEX);
++	wcex.style = CS_OWNDC;
++	wcex.lpfnWndProc = &DefWindowProc;
++	wcex.cbClsExtra = 0;
++	wcex.cbWndExtra = 0;
++	wcex.hInstance = hInstance;
++	wcex.hIcon = NULL;
++	wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
++	wcex.hbrBackground = 0;
++	wcex.lpszMenuName = NULL;
++	wcex.lpszClassName = L"eglsamplewnd";
++	wcex.hIconSm = NULL;
++	wcex.lpfnWndProc = wndProc;
++
++	RegisterClassEx(&wcex);
++	RECT rect = { 0, 0, width, height };
++	int style = WS_BORDER | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME;
++	AdjustWindowRect(&rect, style, FALSE);
++
++	HWND hwnd = CreateWindow(L"eglsamplewnd", L"EGL OpenGL ES 2.0 example", style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, GetModuleHandle(NULL), NULL);
++	ShowWindow(hwnd, SW_SHOW);
++
++	return hwnd;
++}
++
++bool IsBrowserProcess(base::CommandLine* cmd) {
++  std::string process_type = cmd->GetSwitchValueASCII(
++      service_manager::switches::kProcessType);
++  return process_type.empty();
++}
++
++class BrowserMainParts : public content::BrowserMainParts {
++ public:
++  explicit BrowserMainParts() = default;
++  ~BrowserMainParts() override = default;
++
++ protected:
++  // content::BrowserMainParts:
++  void PreMainMessageLoopRun() override {
++    std::cout << "PreMainMessageLoopRun" << '\n';
++    hwnd_ = createWindow(800, 600);
++    gpu::GpuChannelEstablishFactory* factory =
++        content::GetGpuChannelEstablishFactory();
++    scoped_refptr<gpu::GpuChannelHost> host =
++        factory->EstablishGpuChannelSync();
++
++    gpu::ContextCreationAttribs attributes;
++    attributes.alpha_size = -1;
++    attributes.red_size = 8;
++    attributes.green_size = 8;
++    attributes.blue_size = 8;
++    attributes.stencil_size = 0;
++    attributes.depth_size = 0;
++    attributes.samples = 0;
++    attributes.sample_buffers = 0;
++    attributes.bind_generates_resource = false;
++
++    context_provider_ = base::MakeRefCounted<viz::ContextProviderCommandBuffer>(
++        host, factory->GetGpuMemoryBufferManager(),
++        content::kGpuStreamIdDefault, content::kGpuStreamPriorityUI,
++        hwnd_, GURL(std::string("chrome://gpu/CBD")),
++        false /* automatic flushes */, false /* support locking */,
++        false /* support grcontext */, gpu::SharedMemoryLimits(), attributes,
++        viz::command_buffer_metrics::ContextType::BROWSER_MAIN_THREAD);
++  }
++
++  bool MainMessageLoopRun(int* result_code) override {
++    std::cout << "MainMessageLoopRun" << '\n';
++
++    if (context_provider_->BindToCurrentThread() == gpu::ContextResult::kSuccess) {
++      std::cout << "success" << '\n';
++      gl_ = context_provider_->ContextGL();
++
++      GLuint surface_width = 800;
++      GLuint surface_height = 600;
++
++      init(surface_width, surface_height);
++      runRender(surface_width, surface_height);
++
++    } else {
++      std::cout << "fail" << '\n';
++    }
++
++    return content::BrowserMainParts::MainMessageLoopRun(result_code);
++  }
++
++  void runRender(GLuint surface_width, GLuint surface_height) {
++    render(surface_width, surface_height);
++    base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(FROM_HERE,
++        base::BindOnce(&BrowserMainParts::runRender,
++                       base::Unretained(this),
++                       surface_width, surface_height),
++        base::TimeDelta::FromMilliseconds(10));
++  }
++
++  void init(GLuint surface_width, GLuint surface_height) {
++    gl_->ClearDepthf(1.0f);
++    gl_->ClearColor(0.0f, 0.0f, 0.0f, 1.0f);
++
++    gl_->Enable(GL_CULL_FACE);
++
++    program_ = SetupProgram(gl_);
++
++    gl_->GenBuffers(1, &vertexID_);
++    gl_->BindBuffer(GL_ARRAY_BUFFER, vertexID_);
++    gl_->BufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
++
++    gl_->GenBuffers(1, &colorID_);
++    gl_->BindBuffer(GL_ARRAY_BUFFER, colorID_);
++    gl_->BufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
++
++    projectionMat = (glMatrix*)malloc(sizeof(glMatrix));
++    loadIdentity(projectionMat);
++
++    GLfloat aspect = (float)surface_width / (float)surface_height;
++    GLfloat nearF = -4.0f;
++    GLfloat farF = 4.0f;
++    GLfloat yFOV = 75.0f;
++    GLfloat height = tanf(yFOV / 360.0f * M_PI) * nearF;
++    GLfloat width = height * aspect;
++
++    frustumMatrix(projectionMat, -width, width, -height, height, nearF, farF);
++
++    if (surface_width > surface_height){
++      scaleMatrix(projectionMat, 1.0f / aspect, 1.0f, 1.0f);
++    } else {
++      scaleMatrix(projectionMat, 1.0f, aspect, 1.0f);
++    }
++    modelviewMat = (glMatrix*) malloc(sizeof(glMatrix));
++    loadIdentity(modelviewMat);
++    mvpMat = (glMatrix*) malloc(sizeof(glMatrix));
++  }
++
++  void render(GLuint surface_width, GLuint surface_height) {
++    gl_->Viewport(0, 0, surface_width, surface_height);
++    gl_->Clear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++    gl_->UseProgram(program_);
++
++    GLuint mvpLoc = gl_->GetUniformLocation(program_, "u_mvpMat");
++    GLuint position_loc = gl_->GetAttribLocation(program_, "a_position");
++    GLuint color_loc = gl_->GetAttribLocation(program_, "a_color");
++
++    // Enable and bind the vertex information
++    gl_->EnableVertexAttribArray(position_loc);
++    gl_->BindBuffer(GL_ARRAY_BUFFER, vertexID_);
++    gl_->VertexAttribPointer(position_loc, 3, GL_FLOAT, GL_FALSE,
++                            3 * sizeof(GLfloat), 0);
++
++    // Enable and bind the color information
++    gl_->EnableVertexAttribArray(color_loc);
++    gl_->BindBuffer(GL_ARRAY_BUFFER, colorID_);
++    gl_->VertexAttribPointer(color_loc, 4, GL_FLOAT, GL_FALSE,
++                            4 * sizeof(GLfloat), 0);
++
++    rotationMatrix(modelviewMat, 1.0f, 0.8017837f, 0.5345225f, 0.2672612f);
++    multMatrix(mvpMat, modelviewMat, projectionMat);
++    gl_->UniformMatrix4fv(mvpLoc, 1, false, &mvpMat->mat[0][0]);
++
++    gl_->DrawArrays(GL_TRIANGLES, 0, 36);
++
++    gl_->DisableVertexAttribArray(position_loc);
++    gl_->DisableVertexAttribArray(color_loc);
++
++    gl_->Flush();
++    gl_->SwapBuffers(1);
++  }
++
++ private:
++  GLuint vertexID_;
++  GLuint colorID_;
++  GLuint program_;
++
++  gpu::gles2::GLES2Interface* gl_;
++  HWND hwnd_;
++  scoped_refptr<viz::ContextProviderCommandBuffer> context_provider_;
++
++  DISALLOW_COPY_AND_ASSIGN(BrowserMainParts);
++};
++
++class BrowserClient : public content::ContentBrowserClient {
++ public:
++  BrowserClient() = default;
++  ~BrowserClient() override = default;
++
++ protected:
++  std::unique_ptr<content::BrowserMainParts> CreateBrowserMainParts(
++      const content::MainFunctionParams&) override {
++    std::cout << "CreateBrowserMainParts" << '\n';
++    return std::make_unique<BrowserMainParts>();
++  }
++
++ private:
++  DISALLOW_COPY_AND_ASSIGN(BrowserClient);
++};
++
++class MainDelegate : public content::ContentMainDelegate {
++ public:
++  MainDelegate() = default;
++  ~MainDelegate() override = default;
++
++ protected:
++  // content::ContentMainDelegate:
++  bool BasicStartupComplete(int* exit_code) override {
++    std::cout << "BasicStartupComplete" << '\n';
++    auto* command_line = base::CommandLine::ForCurrentProcess();
++
++    chrome::RegisterPathProvider();
++
++#if defined(OS_WIN)
++    // Ignore invalid parameter errors.
++    _set_invalid_parameter_handler(InvalidParameterHandler);
++    // Disable the ActiveVerifier, which is used by Chrome to track possible
++    // bugs, but no use in Electron.
++    base::win::DisableHandleVerifier();
++
++    if (IsBrowserProcess(command_line))
++      base::win::PinUser32();
++#endif
++
++    content_client_ = std::make_unique<content::ContentClient>();
++    SetContentClient(content_client_.get());
++
++    return false;
++  }
++
++  void PreSandboxStartup() override {
++    std::cout << "PreSandboxStartup" << '\n';
++  }
++
++  void PreCreateMainMessageLoop() override {
++    std::cout << "PreCreateMainMessageLoop" << '\n';
++
++    auto* cmd_line = base::CommandLine::ForCurrentProcess();
++    auto enable_features =
++        cmd_line->GetSwitchValueASCII(::switches::kEnableFeatures);
++    auto disable_features =
++        cmd_line->GetSwitchValueASCII(::switches::kDisableFeatures);
++
++    base::FeatureList::InitializeInstance(enable_features, disable_features);
++  }
++
++  void PostEarlyInitialization(bool is_running_tests) override {
++    std::cout << "PostEarlyInitialization" << '\n';
++  }
++
++  content::ContentBrowserClient* CreateContentBrowserClient() override {
++    std::cout << "CreateContentBrowserClient" << '\n';
++    browser_client_ = std::make_unique<BrowserClient>();
++    return browser_client_.get();
++  }
++
++ private:
++  std::unique_ptr<content::ContentClient> content_client_;
++  std::unique_ptr<content::ContentBrowserClient> browser_client_;
++
++  DISALLOW_COPY_AND_ASSIGN(MainDelegate);
++};
++
++int main(int argc, char* argv[]) {
++  base::CommandLine::Init(argc, argv);
++  HINSTANCE instance = GetModuleHandle(NULL);
++
++  sandbox::SandboxInterfaceInfo sandbox_info = {0};
++  content::InitializeSandboxInfo(&sandbox_info);
++  MainDelegate delegate;
++
++  content::ContentMainParams params(&delegate);
++  params.instance = instance;
++  params.sandbox_info = &sandbox_info;
++  return content::ContentMain(params);
++}
+diff --git a/command_buffer_demo_dll/BUILD.gn b/command_buffer_demo_dll/BUILD.gn
+new file mode 100644
+index 0000000000000000000000000000000000000000..65da1fc633524f8084da408a979eb73a13020f2f
+--- /dev/null
++++ b/command_buffer_demo_dll/BUILD.gn
+@@ -0,0 +1,51 @@
++import("//build/config/win/manifest.gni")
++
++windows_manifest("hello_manifest") {
++  sources = [
++    "../electron/shell/browser/resources/win/disable_window_filtering.manifest",
++    "../electron/shell/browser/resources/win/dpi_aware.manifest",
++    as_invoker_manifest,
++    common_controls_manifest,
++    default_compatibility_manifest,
++  ]
++}
++
++shared_library("hello") {
++  sources = [
++    "hello_old.cc",
++    "win_delay_load_hook.cc",
++  ]
++
++  deps = [
++    # "//content/public/browser",
++    ":hello_manifest",
++
++  ]
++
++  configs += [
++    "//third_party/khronos:khronos_headers",
++  ]
++
++  ldflags = [
++    "/DELAYLOAD:node.exe",
++  ]
++
++  output_name = "hello"
++  output_extension = "node"
++
++  include_dirs = [
++    "../out/Release/gen/node_headers/include/node",
++    "../electron/native_api",
++  ]
++
++  defines = [
++    "BUILDING_NODE_EXTENSION",
++    "NODE_GYP_MODULE_NAME=" + target_name,
++    "GL_GLEXT_PROTOTYPES",
++    "GL_CLIENT_FAIL_GL_ERRORS",
++  ]
++
++  libs = [
++    "electron.lib",
++  ]
++}
+diff --git a/command_buffer_demo_dll/gpu_utils.h b/command_buffer_demo_dll/gpu_utils.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..6cb08ea2850ae808a52dc22c93e7e3a0a7a2428c
+--- /dev/null
++++ b/command_buffer_demo_dll/gpu_utils.h
+@@ -0,0 +1,26 @@
++// Copyright 2016 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_PUBLIC_BROWSER_GPU_UTILS_H_
++#define CONTENT_PUBLIC_BROWSER_GPU_UTILS_H_
++
++#include "base/callback_forward.h"
++#include "content/common/content_export.h"
++#include "gpu/config/gpu_preferences.h"
++
++namespace gpu {
++class GpuChannelEstablishFactory;
++}
++
++namespace content {
++
++__declspec(dllimport) const gpu::GpuPreferences GetGpuPreferencesFromCommandLine();
++
++__declspec(dllimport) void StopGpuProcess(base::OnceClosure callback);
++
++__declspec(dllimport) gpu::GpuChannelEstablishFactory* GetGpuChannelEstablishFactory();
++
++}  // namespace content
++
++#endif  // CONTENT_PUBLIC_BROWSER_GPU_UTILS_H_
+diff --git a/command_buffer_demo_dll/hello.js b/command_buffer_demo_dll/hello.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..033253f04a6599a9006fd9777a5d76403e355231
+--- /dev/null
++++ b/command_buffer_demo_dll/hello.js
+@@ -0,0 +1,44 @@
++const { BrowserWindow, app, contentTracing } = require('electron')
++
++// console.log(addon.hello()); // 'world'
++
++// addon.render();
++
++app.on('ready', () => {
++  // (async () => {
++  //   await contentTracing.startRecording({
++  //     include_categories: ['*']
++  //   })
++  //   console.log('Tracing started')
++  //   await new Promise(resolve => setTimeout(resolve, 10000))
++  //   const path = await contentTracing.stopRecording()
++  //   console.log('Tracing data recorded to ' + path)
++  //   process.exit();
++  // })()
++
++  const win = new BrowserWindow({ width: 800, height: 600 })
++  // win.loadURL(`https://testdrive-archive.azurewebsites.net/graphics/webglstresstest/`)
++  win.loadURL(`chrome://gpu`)
++
++  const addon = require('../out/Release/hello');
++  console.log(addon.hello());
++
++  addon.create();
++
++  setTimeout(() => {
++    addon.init();
++
++    setInterval(() => {
++      addon.render();
++    }, 10)
++
++    console.log(addon.vendor())
++    console.log(addon.version())
++    console.log(addon.renderer())
++    console.log(addon.extensions())
++
++    setTimeout(() => {
++      process.exit();
++    }, 500000)
++  }, 1000)
++})
+diff --git a/command_buffer_demo_dll/hello_old.cc b/command_buffer_demo_dll/hello_old.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..9d15a31def5b3bd685dcf90ff06a4f98300e7b31
+--- /dev/null
++++ b/command_buffer_demo_dll/hello_old.cc
+@@ -0,0 +1,631 @@
++// hello.cc
++#include <windows.h>
++#include <node.h>
++
++#include <GLES2/gl2.h>
++#include <GLES2/gl2extchromium.h>
++#include <EGL/egl.h>
++
++#include <iostream>
++
++#define SHADER(Src) #Src
++#define M_PI 3.1415926535897932f
++
++namespace demo {
++
++using v8::FunctionCallbackInfo;
++using v8::Isolate;
++using v8::Local;
++using v8::NewStringType;
++using v8::Object;
++using v8::String;
++using v8::Value;
++
++static const GLfloat vertices[] =
++{
++    // front
++    -0.5f, 0.5f, 0.5f,
++    -0.5f, -0.5f, 0.5f,
++    0.5f, 0.5f, 0.5f,
++    0.5f, 0.5f, 0.5f,
++    -0.5f, -0.5f, 0.5f,
++    0.5f, -0.5f, 0.5f,
++
++    // right
++    0.5f, 0.5f, 0.5f,
++    0.5f, -0.5f, 0.5f,
++    0.5f, 0.5f, -0.5f,
++    0.5f, 0.5f, -0.5f,
++    0.5f, -0.5f, 0.5f,
++    0.5f, -0.5f, -0.5f,
++
++    // back
++    0.5f, 0.5f, -0.5f,
++    0.5f, -0.5f, -0.5f,
++    -0.5f, 0.5f, -0.5f,
++    -0.5f, 0.5f, -0.5f,
++    0.5f, -0.5f, -0.5f,
++    -0.5f, -0.5f, -0.5f,
++
++    // left
++    -0.5f, 0.5f, -0.5f,
++    -0.5f, -0.5f, -0.5f,
++    -0.5f, 0.5f, 0.5f,
++    -0.5f, 0.5f, 0.5f,
++    -0.5f, -0.5f, -0.5f,
++    -0.5f, -0.5f, 0.5f,
++
++    // top
++    -0.5f, 0.5f, -0.5f,
++    -0.5f, 0.5f, 0.5f,
++    0.5f, 0.5f, -0.5f,
++    0.5f, 0.5f, -0.5f,
++    -0.5f, 0.5f, 0.5f,
++    0.5f, 0.5f, 0.5f,
++
++    // bottom
++    -0.5f, -0.5f, 0.5f,
++    -0.5f, -0.5f, -0.5f,
++    0.5f, -0.5f, 0.5f,
++    0.5f, -0.5f, 0.5f,
++    -0.5f, -0.5f, -0.5f,
++    0.5f, -0.5f, -0.5f
++};
++
++static const GLfloat colors[] =
++{
++    // front
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++    1.0f, 0.0f, 0.0f, 1.0f,
++
++    // right
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++    0.0f, 1.0f, 0.0f, 1.0f,
++
++    // back
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++    0.0f, 0.0f, 1.0f, 1.0f,
++
++    // left
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++    1.0f, 1.0f, 0.0f, 1.0f,
++
++    // top
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++    1.0f, 0.0f, 1.0f, 1.0f,
++
++    // bottom
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++    0.0f, 1.0f, 1.0f, 1.0f,
++};
++
++typedef struct{
++    GLfloat mat[4][4];
++} glMatrix;
++
++static glMatrix *projectionMat;
++static glMatrix *modelviewMat;
++static glMatrix *mvpMat;
++
++static GLuint vertexID;
++static GLuint colorID;
++static GLuint program;
++
++bool initialized = false;
++
++void multMatrix(glMatrix *result, glMatrix *srcA, glMatrix *srcB)
++{
++    glMatrix    tmp;
++    int         i;
++
++    for (i=0; i<4; i++)
++    {
++        tmp.mat[i][0] = (srcA->mat[i][0] * srcB->mat[0][0]) +
++                        (srcA->mat[i][1] * srcB->mat[1][0]) +
++                        (srcA->mat[i][2] * srcB->mat[2][0]) +
++                        (srcA->mat[i][3] * srcB->mat[3][0]) ;
++
++        tmp.mat[i][1] = (srcA->mat[i][0] * srcB->mat[0][1]) +
++                        (srcA->mat[i][1] * srcB->mat[1][1]) +
++                        (srcA->mat[i][2] * srcB->mat[2][1]) +
++                        (srcA->mat[i][3] * srcB->mat[3][1]) ;
++
++        tmp.mat[i][2] = (srcA->mat[i][0] * srcB->mat[0][2]) +
++                        (srcA->mat[i][1] * srcB->mat[1][2]) +
++                        (srcA->mat[i][2] * srcB->mat[2][2]) +
++                        (srcA->mat[i][3] * srcB->mat[3][2]) ;
++
++        tmp.mat[i][3] = (srcA->mat[i][0] * srcB->mat[0][3]) +
++                        (srcA->mat[i][1] * srcB->mat[1][3]) +
++                        (srcA->mat[i][2] * srcB->mat[2][3]) +
++                        (srcA->mat[i][3] * srcB->mat[3][3]) ;
++    }
++    memcpy(result, &tmp, sizeof(glMatrix));
++}
++
++void loadIdentity(glMatrix *result)
++{
++    memset(result, 0x0, sizeof(glMatrix));
++    result->mat[0][0] = 1.0f;
++    result->mat[1][1] = 1.0f;
++    result->mat[2][2] = 1.0f;
++    result->mat[3][3] = 1.0f;
++}
++
++void scaleMatrix(glMatrix *result, GLfloat sx, GLfloat sy, GLfloat sz)
++{
++    result->mat[0][0] *= sx;
++    result->mat[0][1] *= sx;
++    result->mat[0][2] *= sx;
++    result->mat[0][3] *= sx;
++
++    result->mat[1][0] *= sy;
++    result->mat[1][1] *= sy;
++    result->mat[1][2] *= sy;
++    result->mat[1][3] *= sy;
++
++    result->mat[2][0] *= sz;
++    result->mat[2][1] *= sz;
++    result->mat[2][2] *= sz;
++    result->mat[2][3] *= sz;
++}
++
++void rotationMatrix(glMatrix *result, GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
++{
++    GLfloat sinAngle, cosAngle;
++    GLfloat mag = sqrtf(x * x + y * y + z * z);
++
++    sinAngle = sin ( angle * M_PI / 180.0f );
++    cosAngle = cos ( angle * M_PI / 180.0f );
++    if ( mag > 0.0f )
++    {
++        GLfloat xx, yy, zz, xy, yz, zx, xs, ys, zs;
++        GLfloat oneMinusCos;
++        glMatrix rotMat;
++
++        x /= mag;
++        y /= mag;
++        z /= mag;
++
++        xx = x * x;
++        yy = y * y;
++        zz = z * z;
++        xy = x * y;
++        yz = y * z;
++        zx = z * x;
++        xs = x * sinAngle;
++        ys = y * sinAngle;
++        zs = z * sinAngle;
++        oneMinusCos = 1.0f - cosAngle;
++
++        rotMat.mat[0][0] = (oneMinusCos * xx) + cosAngle;
++        rotMat.mat[0][1] = (oneMinusCos * xy) - zs;
++        rotMat.mat[0][2] = (oneMinusCos * zx) + ys;
++        rotMat.mat[0][3] = 0.0F;
++
++        rotMat.mat[1][0] = (oneMinusCos * xy) + zs;
++        rotMat.mat[1][1] = (oneMinusCos * yy) + cosAngle;
++        rotMat.mat[1][2] = (oneMinusCos * yz) - xs;
++        rotMat.mat[1][3] = 0.0F;
++
++        rotMat.mat[2][0] = (oneMinusCos * zx) - ys;
++        rotMat.mat[2][1] = (oneMinusCos * yz) + xs;
++        rotMat.mat[2][2] = (oneMinusCos * zz) + cosAngle;
++        rotMat.mat[2][3] = 0.0F;
++
++        rotMat.mat[3][0] = 0.0F;
++        rotMat.mat[3][1] = 0.0F;
++        rotMat.mat[3][2] = 0.0F;
++        rotMat.mat[3][3] = 1.0F;
++
++        multMatrix( result, &rotMat, result );
++    }
++}
++
++void frustumMatrix(glMatrix *result, float left, float right, float bottom, float top, float nearZ, float farZ)
++{
++    float       deltaX = right - left;
++    float       deltaY = top - bottom;
++    float       deltaZ = farZ - nearZ;
++    glMatrix    frust;
++
++    if ( (nearZ <= 0.0f) || (farZ <= 0.0f) ||
++         (deltaX <= 0.0f) || (deltaY <= 0.0f) || (deltaZ <= 0.0f) )
++            return;
++
++    frust.mat[0][0] = 2.0f * nearZ / deltaX;
++    frust.mat[0][1] = frust.mat[0][2] = frust.mat[0][3] = 0.0f;
++
++    frust.mat[1][1] = 2.0f * nearZ / deltaY;
++    frust.mat[1][0] = frust.mat[1][2] = frust.mat[1][3] = 0.0f;
++
++    frust.mat[2][0] = (right + left) / deltaX;
++    frust.mat[2][1] = (top + bottom) / deltaY;
++    frust.mat[2][2] = -(nearZ + farZ) / deltaZ;
++    frust.mat[2][3] = -1.0f;
++
++    frust.mat[3][2] = -2.0f * nearZ * farZ / deltaZ;
++    frust.mat[3][0] = frust.mat[3][1] = frust.mat[3][3] = 0.0f;
++
++    multMatrix(result, &frust, result);
++}
++
++GLuint LoadShader(GLenum type, const char* shaderSrc) {
++  GLint status = GL_FALSE;
++  GLuint shader = glCreateShader(type);
++  if (!shader) {
++    std::cout << glGetError() << '\n';
++    return 0;
++  } else {
++    glShaderSource(shader, 1, &shaderSrc, 0);
++    glCompileShader(shader);
++    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
++    if (GL_FALSE == status) {
++        GLchar log[256];
++        glGetShaderInfoLog(shader, 256, NULL, log);
++        std::cout << log << '\n';
++        glDeleteShader(shader);
++    }
++
++    return shader;
++  }
++}
++
++GLuint SetupProgram() {
++  static const char* vertex_shader_source = SHADER(
++    uniform mat4 u_mvpMat;
++    attribute vec4 a_position;
++    attribute vec4 a_color;
++    varying vec4 v_color;
++    void main()
++    {
++      gl_Position = u_mvpMat * a_position;
++      v_color = a_color;
++    }
++  );
++
++  static const char* fragment_shader_source = SHADER(
++    precision mediump float;
++    varying vec4 v_color;
++    void main()
++    {
++      gl_FragColor = v_color;
++    }
++  );
++
++  GLuint vertex_shader = LoadShader(GL_VERTEX_SHADER, vertex_shader_source);
++  GLuint fragment_shader = LoadShader(GL_FRAGMENT_SHADER, fragment_shader_source);
++  GLuint program = glCreateProgram();
++  glAttachShader(program, vertex_shader);
++  glAttachShader(program, fragment_shader);
++  // Link the program
++  glLinkProgram(program);
++  GLint linked = 0;
++  glGetProgramiv(program, GL_LINK_STATUS, &linked);
++  if (linked == 0) {
++    char buffer[1024];
++    GLsizei length = 0;
++    glGetProgramInfoLog(program, sizeof(buffer), &length, buffer);
++    std::string log(buffer, length);
++    std::cout << log << '\n';
++    glDeleteProgram(program);
++    program = 0;
++  }
++
++  glDeleteShader(fragment_shader);
++  glDeleteShader(vertex_shader);
++
++  return program;
++}
++
++BOOL CALLBACK EnumChildWindowsCallback(HWND hwnd, LPARAM lparam) {
++  std::cout << hwnd << '\n';
++
++  RECT rect;
++  GetWindowRect(hwnd, &rect);
++
++  std::cout << rect.left << '\n';
++  std::cout << rect.top << '\n';
++  std::cout << rect.right << '\n';
++  std::cout << rect.bottom << '\n';
++
++  return TRUE;
++}
++
++static LRESULT CALLBACK wndProc(HWND wnd, UINT message,
++    WPARAM wParam, LPARAM lParam)
++{
++    // RECT rc;
++    int useDefWindowProc = 0;
++    switch (message)
++    {
++    case WM_CLOSE:
++        DestroyWindow(wnd);
++        break;
++    case WM_DESTROY:
++        PostQuitMessage(0);
++        break;
++    case WM_KEYDOWN:
++        useDefWindowProc = 1;
++        break;
++    case WM_KEYUP:
++        useDefWindowProc = 1;
++        break;
++    // case WM_SIZE:
++    //     GetClientRect(wnd, &rc);
++    //     // glResizeCHROMIUM
++    //     if (initialized) {
++    //       int width = std::abs(rc.left - rc.right);
++    //       int height = std::abs(rc.top - rc.bottom);
++    //
++    //       // glResizeCHROMIUM(width, height, 1, GL_COLOR_SPACE_SRGB_CHROMIUM, true);
++    //       // glSetDrawRectangleCHROMIUM(0, 0, width, height);
++    //     }
++    //     break;
++    case WM_NCACTIVATE: {
++      useDefWindowProc = 1;
++      break;
++    }
++    // case WM_PAINT: {
++    //   PAINTSTRUCT ps;
++    //   HDC display_dc = BeginPaint(wnd, &ps);
++    //
++    //   if (display_dc) {
++    //     HBRUSH brush = reinterpret_cast<HBRUSH>(GetStockObject(DKGRAY_BRUSH));
++    //     FillRect(ps.hdc, &ps.rcPaint, brush);
++    //   }
++    //
++    //   EndPaint(wnd, &ps);
++    //
++    //   break;
++    // }
++    default:
++        useDefWindowProc = 1;
++    }
++    if (useDefWindowProc)
++        return DefWindowProc(wnd, message, wParam, lParam);
++    return 0;
++}
++
++HWND createWindow(int width, int height) {
++	HINSTANCE hInstance = GetModuleHandle(NULL);
++	WNDCLASSEX wcex;
++
++	wcex.cbSize = sizeof(WNDCLASSEX);
++	wcex.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
++	wcex.lpfnWndProc = &DefWindowProc;
++	wcex.cbClsExtra = 0;
++	wcex.cbWndExtra = 0;
++	wcex.hInstance = hInstance;
++	wcex.hIcon = LoadIcon(NULL, IDI_WINLOGO);
++	wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
++	wcex.hbrBackground = 0;
++	wcex.lpszMenuName = NULL;
++	wcex.lpszClassName = L"poop";
++	wcex.hIconSm = NULL;
++	wcex.lpfnWndProc = wndProc;
++
++	RegisterClassEx(&wcex);
++	RECT rect = { 0, 0, width, height };
++	int style = WS_BORDER | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_CLIPCHILDREN | WS_OVERLAPPEDWINDOW ;
++	AdjustWindowRect(&rect, style, FALSE);
++
++  	HWND hwnd = CreateWindow(L"poop", L"EGL OpenGL ES 2.0 example", style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top, NULL, NULL, GetModuleHandle(NULL), NULL);
++	ShowWindow(hwnd, SW_SHOW);
++
++	return hwnd;
++}
++
++// HWND createWindow(int width, int height) {
++//   auto* window = new electron::api::gl::Window(0, 0, width, height);
++//   // ShowWindow(window->hwnd(), SW_SHOW);
++//   return window->hwnd();
++// }
++
++int width = 800;
++int height = 600;
++
++void init(GLuint surface_width, GLuint surface_height) {
++  glEnable(GL_CULL_FACE);
++
++  program = SetupProgram();
++
++  glGenBuffers(1, &vertexID);
++  glBindBuffer(GL_ARRAY_BUFFER, vertexID);
++  glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
++
++  glGenBuffers(1, &colorID);
++  glBindBuffer(GL_ARRAY_BUFFER, colorID);
++  glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
++
++  projectionMat = (glMatrix*)malloc(sizeof(glMatrix));
++  loadIdentity(projectionMat);
++
++  GLfloat aspect = (float)surface_width / (float)surface_height;
++  GLfloat nearF = -4.0f;
++  GLfloat farF = 4.0f;
++  GLfloat yFOV = 75.0f;
++  GLfloat height = tanf(yFOV / 360.0f * M_PI) * nearF;
++  GLfloat width = height * aspect;
++
++  frustumMatrix(projectionMat, -width, width, -height, height, nearF, farF);
++
++  if (surface_width > surface_height){
++    scaleMatrix(projectionMat, 1.0f / aspect, 1.0f, 1.0f);
++  } else {
++    scaleMatrix(projectionMat, 1.0f, aspect, 1.0f);
++  }
++  modelviewMat = (glMatrix*) malloc(sizeof(glMatrix));
++  loadIdentity(modelviewMat);
++  mvpMat = (glMatrix*) malloc(sizeof(glMatrix));
++
++  // glResizeCHROMIUM(surface_width, surface_height, 1, GL_COLOR_SPACE_SRGB_CHROMIUM, true);
++  // glSetDrawRectangleCHROMIUM(0, 0, surface_width, surface_height);
++
++  initialized = true;
++}
++
++HWND hwnd_;
++EGLSurface eglSurface_;
++EGLDisplay eglDisplay_;
++
++void render(GLuint surface_width, GLuint surface_height) {
++  glViewport(0, 0, surface_width, surface_height);
++  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
++	glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
++  glUseProgram(program);
++
++  GLuint mvpLoc = glGetUniformLocation(program, "u_mvpMat");
++  GLuint position_loc = glGetAttribLocation(program, "a_position");
++  GLuint color_loc = glGetAttribLocation(program, "a_color");
++
++  // Enable and bind the vertex information
++  glEnableVertexAttribArray(position_loc);
++  glBindBuffer(GL_ARRAY_BUFFER, vertexID);
++  glVertexAttribPointer(position_loc, 3, GL_FLOAT, GL_FALSE,
++                          3 * sizeof(GLfloat), 0);
++
++  // Enable and bind the color information
++  glEnableVertexAttribArray(color_loc);
++  glBindBuffer(GL_ARRAY_BUFFER, colorID);
++  glVertexAttribPointer(color_loc, 4, GL_FLOAT, GL_FALSE,
++                          4 * sizeof(GLfloat), 0);
++
++  rotationMatrix(modelviewMat, 1.0f, 0.8017837f, 0.5345225f, 0.2672612f);
++  multMatrix(mvpMat, modelviewMat, projectionMat);
++  glUniformMatrix4fv(mvpLoc, 1, false, &mvpMat->mat[0][0]);
++
++  glDrawArrays(GL_TRIANGLES, 0, 36);
++
++  glDisableVertexAttribArray(position_loc);
++  glDisableVertexAttribArray(color_loc);
++
++  eglSwapBuffers(eglDisplay_, eglSurface_);
++}
++
++void Hello(const FunctionCallbackInfo<Value>& args) {
++  Isolate* isolate = args.GetIsolate();
++
++  args.GetReturnValue().Set(String::NewFromUtf8(
++      isolate, "world", NewStringType::kNormal).ToLocalChecked());
++}
++
++void Create(const FunctionCallbackInfo<Value>& args) {
++  hwnd_ = createWindow(width, height);
++}
++
++void Init(const FunctionCallbackInfo<Value>& args) {
++  eglDisplay_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++  EGLint eglVersionMajor, eglVersionMinor;
++  eglInitialize(eglDisplay_, &eglVersionMajor, &eglVersionMinor);
++
++  eglBindAPI(EGL_OPENGL_ES_API);
++
++  EGLint configAttributes[] = {
++    EGL_RED_SIZE, 8,
++    EGL_GREEN_SIZE, 8,
++    EGL_BLUE_SIZE, 8,
++    EGL_ALPHA_SIZE, 8,
++    EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER,
++    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
++    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
++    EGL_TRANSPARENT_TYPE, EGL_TRANSPARENT_RGB,
++    EGL_NONE
++  };
++
++  EGLint numConfigs;
++  EGLConfig windowConfig;
++  eglChooseConfig(eglDisplay_, configAttributes, &windowConfig, 1, &numConfigs);
++
++  EGLint surfaceAttributes[] = { EGL_NONE };
++  eglSurface_ = eglCreateWindowSurface(eglDisplay_, windowConfig, hwnd_, surfaceAttributes);
++
++  EGLint contextAttributes[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
++	EGLContext eglContext = eglCreateContext(eglDisplay_, windowConfig, NULL, contextAttributes);
++  eglMakeCurrent(eglDisplay_, eglSurface_, eglSurface_, eglContext);
++
++  printf("Using display %p with EGL version %d.%d\n", eglDisplay_, eglVersionMajor, eglVersionMinor);
++
++	printf("EGL Version \"%s\"\n", eglQueryString(eglDisplay_, EGL_VERSION));
++	printf("EGL Vendor \"%s\"\n", eglQueryString(eglDisplay_, EGL_VENDOR));
++	printf("EGL Extensions \"%s\"\n", eglQueryString(eglDisplay_, EGL_EXTENSIONS));
++
++  init(width, height);
++
++  EnumChildWindows(hwnd_, EnumChildWindowsCallback, NULL);
++}
++
++void Render(const FunctionCallbackInfo<Value>& args) {
++  render(width, height);
++}
++
++void Vendor(const FunctionCallbackInfo<Value>& args) {
++  Isolate* isolate = args.GetIsolate();
++  const GLubyte* str = glGetString(GL_VENDOR);
++
++  args.GetReturnValue().Set(String::NewFromUtf8(
++      isolate, (const char*)str, NewStringType::kNormal).ToLocalChecked());
++}
++
++void Version(const FunctionCallbackInfo<Value>& args) {
++  Isolate* isolate = args.GetIsolate();
++  const GLubyte* str = glGetString(GL_VERSION);
++
++  args.GetReturnValue().Set(String::NewFromUtf8(
++      isolate, (const char*)str, NewStringType::kNormal).ToLocalChecked());
++}
++
++void Renderer(const FunctionCallbackInfo<Value>& args) {
++  Isolate* isolate = args.GetIsolate();
++  const GLubyte* str = glGetString(GL_RENDERER);
++
++  args.GetReturnValue().Set(String::NewFromUtf8(
++      isolate, (const char*)str, NewStringType::kNormal).ToLocalChecked());
++}
++
++void Extensions(const FunctionCallbackInfo<Value>& args) {
++  Isolate* isolate = args.GetIsolate();
++  const GLubyte* str = glGetString(GL_EXTENSIONS);
++
++  args.GetReturnValue().Set(String::NewFromUtf8(
++      isolate, (const char*)str, NewStringType::kNormal).ToLocalChecked());
++}
++
++void Initialize(Local<Object> exports) {
++  NODE_SET_METHOD(exports, "hello", Hello);
++  NODE_SET_METHOD(exports, "create", Create);
++  NODE_SET_METHOD(exports, "init", Init);
++  NODE_SET_METHOD(exports, "render", Render);
++  NODE_SET_METHOD(exports, "vendor", Vendor);
++  NODE_SET_METHOD(exports, "version", Version);
++  NODE_SET_METHOD(exports, "renderer", Renderer);
++  NODE_SET_METHOD(exports, "extensions", Extensions);
++}
++
++NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize)
++
++}  // namespace demo
+diff --git a/command_buffer_demo_dll/package-lock.json b/command_buffer_demo_dll/package-lock.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a739b67b8b9aebc9142bfad1cfc725674a7e8cb
+--- /dev/null
++++ b/command_buffer_demo_dll/package-lock.json
+@@ -0,0 +1,13 @@
++{
++  "name": "hello_world",
++  "version": "0.0.0",
++  "lockfileVersion": 1,
++  "requires": true,
++  "dependencies": {
++    "nan": {
++      "version": "2.14.1",
++      "resolved": "https://registry.npmjs.org/nan/-/nan-2.14.1.tgz",
++      "integrity": "sha512-isWHgVjnFjh2x2yuJ/tj3JbwoHu3UC2dX5G/88Cm24yB6YopVgxvBObDY7n5xW6ExmFhJpSEQqFPvq9zaXc8Jw=="
++    }
++  }
++}
+diff --git a/command_buffer_demo_dll/package.json b/command_buffer_demo_dll/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..84dcbd9fb6f9421ac05e313774708fc4d2f08562
+--- /dev/null
++++ b/command_buffer_demo_dll/package.json
+@@ -0,0 +1,14 @@
++{
++  "name": "hello_world",
++  "version": "0.0.0",
++  "description": "Node.js Addons Example #1",
++  "main": "hello.js",
++  "private": true,
++  "dependencies": {
++    "nan": "^2.0.0"
++  },
++  "scripts": {
++    "test": "node hello.js",
++    "rebuild": "electron-rebuild -f -w yourmodule"
++  }
++}
+diff --git a/command_buffer_demo_dll/win_delay_load_hook.cc b/command_buffer_demo_dll/win_delay_load_hook.cc
+new file mode 100644
+index 0000000000000000000000000000000000000000..50655159c36199de013c54035fb279bd0604a23e
+--- /dev/null
++++ b/command_buffer_demo_dll/win_delay_load_hook.cc
+@@ -0,0 +1,32 @@
++/*
++ * When this file is linked to a DLL, it sets up a delay-load hook that
++ * intervenes when the DLL is trying to load 'node.exe' or 'iojs.exe'
++ * dynamically. Instead of trying to locate the .exe file it'll just return
++ * a handle to the process image.
++ *
++ * This allows compiled addons to work when node.exe or iojs.exe is renamed.
++ */
++
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++
++#include <windows.h>
++
++#include <delayimp.h>
++#include <string.h>
++
++static FARPROC WINAPI load_exe_hook(unsigned int event, DelayLoadInfo* info) {
++  HMODULE m;
++  if (event != dliNotePreLoadLibrary)
++    return NULL;
++
++  if (_stricmp(info->szDll, "iojs.exe") != 0 &&
++      _stricmp(info->szDll, "node.exe") != 0)
++    return NULL;
++
++  m = GetModuleHandle(NULL);
++  return (FARPROC) m;
++}
++
++decltype(__pfnDliNotifyHook2) __pfnDliNotifyHook2 = load_exe_hook;
