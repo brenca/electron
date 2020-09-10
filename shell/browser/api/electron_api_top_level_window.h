@@ -95,7 +95,7 @@ class TopLevelWindow
   void Close();
   virtual void Focus();
   virtual void Blur();
-  bool IsFocused();
+  virtual bool IsFocused();
   void Show();
   void ShowInactive();
   void Hide();

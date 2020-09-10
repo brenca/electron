@@ -227,6 +227,8 @@ auto_filenames = {
     "lib/browser/api/net-log.js",
     "lib/browser/api/net.js",
     "lib/browser/api/notification.js",
+    "lib/browser/api/offscreen-host-view.js",
+    "lib/browser/api/offscreen-window.js",
     "lib/browser/api/power-monitor.ts",
     "lib/browser/api/power-save-blocker.js",
     "lib/browser/api/protocol.ts",
