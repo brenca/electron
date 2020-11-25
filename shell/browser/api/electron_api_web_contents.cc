@@ -2244,24 +2244,23 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
         rwh->ForwardWheelEvent(mouse_wheel_event);
       }
 
-      //       // Send a synthetic wheel event with phaseEnded to finish
-      //       scrolling. mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
-      //       mouse_wheel_event.has_synthetic_phase = true;
-      //       mouse_wheel_event.delta_x = 0;
-      //       mouse_wheel_event.delta_y = 0;
-      //       mouse_wheel_event.wheel_ticks_x = 0;
-      //       mouse_wheel_event.wheel_ticks_y = 0;
-      //       mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
-      //       mouse_wheel_event.dispatch_type =
-      //           blink::WebInputEvent::kEventNonBlocking;
-      //       if (IsOffScreen()) {
-      // #if BUILDFLAG(ENABLE_OSR)
-      //         GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
-      //             mouse_wheel_event);
-      // #endif
-      //       } else {
-      //         rwh->ForwardWheelEvent(mouse_wheel_event);
-      //       }
+      // Send a synthetic wheel event with phaseEnded to finish scrolling.
+      mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      mouse_wheel_event.has_synthetic_phase = true;
+      mouse_wheel_event.delta_x = 0;
+      mouse_wheel_event.delta_y = 0;
+      mouse_wheel_event.wheel_ticks_x = 0;
+      mouse_wheel_event.wheel_ticks_y = 0;
+      mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
+      mouse_wheel_event.dispatch_type = blink::WebInputEvent::kEventNonBlocking;
+      if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+        GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
+            mouse_wheel_event);
+#endif
+      } else {
+        rwh->ForwardWheelEvent(mouse_wheel_event);
+      }
       return;
     }
   }
