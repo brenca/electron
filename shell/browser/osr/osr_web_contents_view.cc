@@ -58,21 +58,13 @@ void OffScreenWebContentsView::SetOffscreenWindow(
 void OffScreenWebContentsView::OnWindowResize() {
   // In offscreen mode call RenderWidgetHostView's SetSize explicitly
   if (GetView())
-    GetView()->SetSize(GetSize());
+    GetView()->SetSize(GetInitialSize());
 }
 
 void OffScreenWebContentsView::OnWindowClosed() {
   if (offscreen_window_) {
     offscreen_window_->RemoveObserver(this);
     offscreen_window_ = nullptr;
-  }
-}
-
-gfx::Size OffScreenWebContentsView::GetSize() {
-  if (offscreen_window_) {
-    return offscreen_window_->GetInternalSize();
-  } else {
-    return gfx::Size();
   }
 }
 
@@ -129,8 +121,7 @@ OffScreenWebContentsView::CreateViewForWidget(
   }
 
   return new OffScreenRenderWidgetHostView(
-      transparent_, painting_, GetFrameRate(), callback_, texture_callback_,
-      render_widget_host, nullptr, GetSize(), GetScaleFactor());
+      this, render_widget_host, nullptr, painting_, frame_rate_, scale_factor_);
 }
 
 content::RenderWidgetHostViewBase*
@@ -146,9 +137,9 @@ OffScreenWebContentsView::CreateViewForChildWidget(
                     ->GetRenderWidgetHostView()
               : web_contents_impl->GetRenderWidgetHostView());
 
-  return new OffScreenRenderWidgetHostView(
-      transparent_, painting_, view->GetFrameRate(), callback_,
-      texture_callback_, render_widget_host, view, GetSize(), GetScaleFactor());
+  return new OffScreenRenderWidgetHostView(this, render_widget_host, view,
+                                           painting_, view->GetFrameRate(),
+                                           scale_factor_);
 }
 
 void OffScreenWebContentsView::SetPageTitle(const base::string16& title) {}
@@ -186,6 +177,27 @@ void OffScreenWebContentsView::StartDragging(
 
 void OffScreenWebContentsView::UpdateDragCursor(
     blink::WebDragOperation operation) {}
+
+bool OffScreenWebContentsView::IsTransparent() const {
+  return transparent_;
+}
+
+const OnPaintCallback& OffScreenWebContentsView::GetPaintCallback() const {
+  return callback_;
+}
+
+const OnTexturePaintCallback&
+OffScreenWebContentsView::GetTexturePaintCallback() const {
+  return texture_callback_;
+}
+
+gfx::Size OffScreenWebContentsView::GetInitialSize() const {
+  if (offscreen_window_) {
+    return offscreen_window_->GetInternalSize();
+  } else {
+    return gfx::Size();
+  }
+}
 
 void OffScreenWebContentsView::SetPainting(bool painting) {
   auto* view = GetView();

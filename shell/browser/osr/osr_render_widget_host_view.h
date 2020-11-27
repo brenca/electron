@@ -71,14 +71,19 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
                                       public viz::DelayBasedTimeSourceClient,
                                       public OffscreenViewProxyObserver {
  public:
-  OffScreenRenderWidgetHostView(bool transparent,
+  class Initializer {
+   public:
+    virtual bool IsTransparent() const = 0;
+    virtual const OnPaintCallback& GetPaintCallback() const = 0;
+    virtual const OnTexturePaintCallback& GetTexturePaintCallback() const = 0;
+    virtual gfx::Size GetInitialSize() const = 0;
+  };
+
+  OffScreenRenderWidgetHostView(Initializer* initializer,
+                                content::RenderWidgetHost* host,
+                                OffScreenRenderWidgetHostView* parent,
                                 bool painting,
                                 int frame_rate,
-                                const OnPaintCallback& callback,
-                                const OnTexturePaintCallback& texture_callback,
-                                content::RenderWidgetHost* render_widget_host,
-                                OffScreenRenderWidgetHostView* parent_host_view,
-                                gfx::Size initial_size,
                                 float scale_factor);
   ~OffScreenRenderWidgetHostView() override;
 
@@ -267,7 +272,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   OffScreenRenderWidgetHostView* child_host_view_ = nullptr;
   std::set<OffscreenViewProxy*> proxy_views_;
 
-  const bool transparent_;
+  bool transparent_;
   OnPaintCallback callback_;
   OnTexturePaintCallback texture_callback_;
   OnPopupPaintCallback parent_callback_;

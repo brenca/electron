@@ -171,24 +171,48 @@ class ElectronDelegatedFrameHostClient
   DISALLOW_COPY_AND_ASSIGN(ElectronDelegatedFrameHostClient);
 };
 
+class StandaloneInitializer
+    : public OffScreenRenderWidgetHostView::Initializer {
+ public:
+  StandaloneInitializer(bool transparent,
+                        OnPaintCallback paint_callback,
+                        OnTexturePaintCallback texture_paint_callback,
+                        gfx::Size initial_size)
+      : transparent_(transparent),
+        paint_callback_(paint_callback),
+        texture_paint_callback_(texture_paint_callback),
+        initial_size_(initial_size) {}
+
+  bool IsTransparent() const override { return transparent_; }
+
+  const OnPaintCallback& GetPaintCallback() const override {
+    return paint_callback_;
+  }
+
+  const OnTexturePaintCallback& GetTexturePaintCallback() const override {
+    return texture_paint_callback_;
+  }
+
+  gfx::Size GetInitialSize() const override { return initial_size_; }
+
+ private:
+  bool transparent_;
+  OnPaintCallback paint_callback_;
+  OnTexturePaintCallback texture_paint_callback_;
+  gfx::Size initial_size_;
+};
+
 OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
-    bool transparent,
+    Initializer* initializer,
+    content::RenderWidgetHost* host,
+    OffScreenRenderWidgetHostView* parent,
     bool painting,
     int frame_rate,
-    const OnPaintCallback& callback,
-    const OnTexturePaintCallback& texture_callback,
-    content::RenderWidgetHost* host,
-    OffScreenRenderWidgetHostView* parent_host_view,
-    gfx::Size initial_size,
     float scale_factor)
     : content::RenderWidgetHostViewBase(host),
       render_widget_host_(content::RenderWidgetHostImpl::From(host)),
-      parent_host_view_(parent_host_view),
-      transparent_(transparent),
-      callback_(callback),
-      texture_callback_(texture_callback),
+      parent_host_view_(parent),
       frame_rate_(frame_rate),
-      size_(initial_size),
       painting_(painting),
       is_showing_(false),
       cursor_manager_(new content::CursorManager(this)),
@@ -197,6 +221,13 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
       weak_ptr_factory_(this) {
   DCHECK(render_widget_host_);
   DCHECK(!render_widget_host_->GetView());
+
+  render_widget_host_->SetView(this);
+
+  transparent_ = initializer->IsTransparent();
+  callback_ = initializer->GetPaintCallback();
+  texture_callback_ = initializer->GetTexturePaintCallback();
+  size_ = initializer->GetInitialSize();
 
   manual_device_scale_factor_ = scale_factor;
   current_device_scale_factor_ = kDefaultScaleFactor;
@@ -243,7 +274,6 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
   //   TimeDeltaFromHz(0.2));
 
   ResizeRootLayer(false);
-  render_widget_host_->SetView(this);
   InstallTransparency();
 
   render_widget_host_->GetProcess()->SetPriorityOverride(true);
@@ -613,10 +643,11 @@ OffScreenRenderWidgetHostView::CreateViewForWidget(
         embedder_render_widget_host->GetView());
   }
 
+  StandaloneInitializer initializer(transparent_, callback_, texture_callback_,
+                                    size());
   return new OffScreenRenderWidgetHostView(
-      transparent_, true, embedder_host_view->GetFrameRate(), callback_,
-      texture_callback_, render_widget_host, embedder_host_view, size(),
-      GetScaleFactor());
+      &initializer, render_widget_host, embedder_host_view, true,
+      embedder_host_view->GetFrameRate(), embedder_host_view->GetScaleFactor());
 }
 
 const viz::FrameSinkId& OffScreenRenderWidgetHostView::GetFrameSinkId() const {

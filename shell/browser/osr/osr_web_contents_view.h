@@ -22,9 +22,11 @@ class OffScreenView;
 
 namespace electron {
 
-class OffScreenWebContentsView : public content::WebContentsView,
-                                 public content::RenderViewHostDelegateView,
-                                 public api::OffscreenWindow::Observer {
+class OffScreenWebContentsView
+    : public content::WebContentsView,
+      public content::RenderViewHostDelegateView,
+      public OffScreenRenderWidgetHostView::Initializer,
+      public api::OffscreenWindow::Observer {
  public:
   OffScreenWebContentsView(bool transparent,
                            float scale_factor,
@@ -38,8 +40,6 @@ class OffScreenWebContentsView : public content::WebContentsView,
   // api::OffscreenWindow::Observer:
   void OnWindowResize() override;
   void OnWindowClosed() override;
-
-  gfx::Size GetSize();
 
   // content::WebContentsView:
   gfx::NativeView GetNativeView() const override;
@@ -78,6 +78,12 @@ class OffScreenWebContentsView : public content::WebContentsView,
                      const content::DragEventSourceInfo& event_info,
                      content::RenderWidgetHostImpl* source_rwh) override;
   void UpdateDragCursor(blink::WebDragOperation operation) override;
+
+  // OffScreenRenderWidgetHostView::Initializer
+  bool IsTransparent() const override;
+  const OnPaintCallback& GetPaintCallback() const override;
+  const OnTexturePaintCallback& GetTexturePaintCallback() const override;
+  gfx::Size GetInitialSize() const override;
 
   void SetPainting(bool painting);
   bool IsPainting() const;
