@@ -9,10 +9,13 @@
 
 #include "base/macros.h"
 #include "base/memory/ref_counted.h"
+#include "gpu/ipc/common/surface_handle.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace egl {
 class Config;
+class NSWindowBridge;
 
 class Surface : public base::RefCountedThreadSafe<Surface> {
  public:
@@ -26,12 +29,15 @@ class Surface : public base::RefCountedThreadSafe<Surface> {
   const Config* config() const;
 
   bool is_offscreen() const;
-  EGLNativeWindowType window() const;
-  const gfx::Size size() const;
+  gpu::SurfaceHandle window() const;
+  const gfx::Size size();
+  const gfx::Rect bounds();
   bool is_size_dirty() const { return size_dirty_; }
   void set_size_dirty(bool dirty) { size_dirty_ = dirty; }
 
-  void setSize(gfx::Size size);
+  float scale_factor();
+
+  void set_bounds(gfx::Rect bounds);
 
   static bool ValidatePbufferAttributeList(const EGLint* attrib_list);
   static bool ValidateWindowAttributeList(const EGLint* attrib_list);
@@ -41,14 +47,21 @@ class Surface : public base::RefCountedThreadSafe<Surface> {
 #endif
 
  private:
+  void Destroy();
+
   friend class base::RefCountedThreadSafe<Surface>;
   ~Surface();
   bool size_dirty_ = true;
   bool is_current_in_some_thread_;
   const Config* config_;
-  gfx::Size size_;
+  gfx::Rect bounds_;
   EGLNativeWindowType win_;
   bool is_offscreen_;
+
+#if defined(OS_MACOSX)
+  NSWindowBridge* window_bridge_;
+#endif
+
   DISALLOW_COPY_AND_ASSIGN(Surface);
 };
 

@@ -7,10 +7,13 @@ source_set("GLES2") {
     "gl2.cc",
   ]
 
-  defines = [
-    "GL_APICALL=__declspec(dllexport)",
-    "GL_APIENTRY=",
-  ]
+  defines = [ "GL_APIENTRY=" ]
+
+  if (current_os == "win") {
+    defines += [ "GL_APICALL=__declspec(dllexport)" ]
+  } else {
+    defines += [ "GL_APICALL=__attribute__((visibility(\"default\")))" ]
+  }
 
   deps = [
     "//gpu/command_buffer/client:gles2_implementation_no_check",

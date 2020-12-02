@@ -143,3 +143,5 @@ cherry-pick-8f24f935c903.patch
 ignore_renderframehostimpl_detach_for_speculative_rfhs.patch
 hardware_accelerated_offscreen_rendering.patch
 command_buffer_demo.patch
+hardware_accelerated_offscreen_rendering_mac.patch
+fix_metal_compilation_error.patch

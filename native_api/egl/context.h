@@ -10,7 +10,13 @@
 #include <EGL/egl.h>
 #include "base/macros.h"
 
+#include "gpu/command_buffer/common/swap_buffers_complete_params.h"
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
+#include "ui/gfx/presentation_feedback.h"
+
+#if defined(OS_MACOSX)
+#include "electron/native_api/egl/overlay_surface.h"
+#endif
 
 namespace gpu {
 class ServiceDiscardableManager;
@@ -47,7 +53,7 @@ class Context : public base::RefCountedThreadSafe<Context> {
 
   // Called by ThreadState to set the needed global variables when this context
   // is current.
-  void ApplyCurrentContext();
+  void ApplyCurrentContext(Surface* surface);
   static void ApplyContextReleased();
 
  private:
@@ -55,6 +61,10 @@ class Context : public base::RefCountedThreadSafe<Context> {
   ~Context();
   bool ConnectToService(Surface* surface);
   bool ConnectedToService() const;
+
+  void SwapBuffersComplete(Surface* surface,
+                           const gpu::SwapBuffersCompleteParams& params);
+  void PresentationComplete(const gfx::PresentationFeedback& feedback);
 
   bool WasServiceContextLost() const;
   bool IsCompatibleSurface(Surface* surface) const;
@@ -67,6 +77,10 @@ class Context : public base::RefCountedThreadSafe<Context> {
   bool is_current_in_some_thread_;
   bool is_destroyed_;
   bool should_set_draw_rectangle_;
+
+#if defined(OS_MACOSX)
+  OverlaySurface* overlay_surface_;
+#endif
 
   scoped_refptr<viz::ContextProviderCommandBuffer> context_provider_;
 

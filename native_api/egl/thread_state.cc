@@ -146,7 +146,7 @@ ThreadState::AutoCurrentContextRestore::AutoCurrentContextRestore(
 
 ThreadState::AutoCurrentContextRestore::~AutoCurrentContextRestore() {
   if (Context* current_context = thread_state_->current_context()) {
-    current_context->ApplyCurrentContext();
+    current_context->ApplyCurrentContext(thread_state_->current_surface());
   } else {
     Context::ApplyContextReleased();
   }

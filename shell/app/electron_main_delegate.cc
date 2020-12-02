@@ -288,6 +288,9 @@ void ElectronMainDelegate::PreSandboxStartup() {
 #if defined(OS_MACOSX)
   // Enable AVFoundation.
   command_line->AppendSwitch("enable-avfoundation");
+  command_line->AppendSwitch(::switches::kDisableRemoteCoreAnimation);
+  command_line->AppendSwitch(
+      ::switches::kDisableGpuMemoryBufferCompositorResources);
 #endif
 }
 

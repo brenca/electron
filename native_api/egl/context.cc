@@ -19,8 +19,16 @@
 #include "electron/native_api/egl/display.h"
 #include "electron/native_api/egl/surface.h"
 #include "electron/native_api/egl/thread_state.h"
-#include "ui/gfx/win/rendering_window_manager.h"
+#include "ui/gl/color_space_utils.h"
 #include "ui/gl/init/gl_factory.h"
+
+#if defined(OS_WIN)
+#include "ui/gfx/win/rendering_window_manager.h"
+#endif
+
+#if defined(OS_MACOSX)
+#include "ui/accelerated_widget_mac/ca_layer_frame_sink.h"
+#endif
 
 namespace {
 const bool kBindGeneratesResources = true;
@@ -50,13 +58,26 @@ bool Context::SwapBuffers(Surface* current_surface) {
   bool offscreen = current_surface->is_offscreen();
 
   if (!offscreen && current_surface->is_size_dirty() && !size.IsEmpty()) {
+#if defined(OS_MACOSX)
+    overlay_surface_->Reshape(size, current_surface->scale_factor());
+#else
+    gfx::ColorSpace color_space = gfx::ColorSpace::CreateSRGB();
     context_provider_->ContextGL()->ResizeCHROMIUM(
-        size.width(), size.height(), 1, GL_COLOR_SPACE_UNSPECIFIED_CHROMIUM,
-        true);
+        size.width(), size.height(), current_surface->scale_factor(),
+        gl::ColorSpaceUtils::GetGLColorSpace(color_space), true);
+#endif
     current_surface->set_size_dirty(false);
   }
 
-  context_provider_->ContextGL()->SwapBuffers(1);
+  overlay_surface_->SwapBuffers();
+
+  auto swap_callback =
+      base::BindOnce(&Context::SwapBuffersComplete, base::Unretained(this),
+                     base::Unretained(current_surface));
+  auto presentation_callback =
+      base::BindOnce(&Context::PresentationComplete, base::Unretained(this));
+  context_provider_->ContextSupport()->Swap(0, std::move(swap_callback),
+                                            std::move(presentation_callback));
 
   if (should_set_draw_rectangle_ && !offscreen && !size.IsEmpty()) {
     context_provider_->ContextGL()->SetDrawRectangleCHROMIUM(0, 0, size.width(),
@@ -68,6 +89,25 @@ bool Context::SwapBuffers(Surface* current_surface) {
   }
 
   return true;
+}
+
+void Context::SwapBuffersComplete(
+    Surface* surface,
+    const gpu::SwapBuffersCompleteParams& params) {
+  // send the params
+#if defined(OS_MACOSX)
+  if (!params.ca_layer_params.is_empty && !surface->is_offscreen()) {
+    ui::CALayerFrameSink* ca_layer_frame_sink =
+        ui::CALayerFrameSink::FromAcceleratedWidget(surface->window());
+    if (ca_layer_frame_sink)
+      ca_layer_frame_sink->UpdateCALayerTree(params.ca_layer_params);
+  }
+  overlay_surface_->SwapBuffersComplete();
+#endif
+}
+
+void Context::PresentationComplete(const gfx::PresentationFeedback& feedback) {
+  // NOOP
 }
 
 bool Context::MakeCurrent(Context* current_context,
@@ -91,14 +131,14 @@ bool Context::MakeCurrent(Context* current_context,
         return false;
       if (new_context != current_context || new_surface != current_surface) {
         Context::ApplyContextReleased();
-        new_context->ApplyCurrentContext();
+        new_context->ApplyCurrentContext(new_surface);
       }
     } else {
       if (!new_context->ConnectToService(new_surface)) {
         return false;
       } else {
         Context::ApplyContextReleased();
-        new_context->ApplyCurrentContext();
+        new_context->ApplyCurrentContext(new_surface);
       }
     }
   }
@@ -120,7 +160,7 @@ bool Context::ValidateAttributeList(const EGLint* attrib_list) {
   return true;
 }
 
-void Context::ApplyCurrentContext() {
+void Context::ApplyCurrentContext(Surface* surface) {
   gles2::SetGLContext(context_provider_->ContextGL());
 }
 
@@ -144,6 +184,7 @@ bool Context::ConnectToService(Surface* surface) {
   helper.fail_if_major_perf_caveat = false;
   helper.lose_context_when_out_of_memory = kLoseContextWhenOutOfMemory;
   helper.context_type = gpu::CONTEXT_TYPE_OPENGLES3;
+  helper.color_space = gpu::COLOR_SPACE_SRGB;
 
   gpu::SurfaceHandle surface_handle;
 
@@ -154,19 +195,28 @@ bool Context::ConnectToService(Surface* surface) {
     surface_handle = surface->window();
   }
 
+#if defined(OS_WIN)
   gfx::RenderingWindowManager::GetInstance()->RegisterParent(surface->window());
+#endif
 
   context_provider_ = base::MakeRefCounted<viz::ContextProviderCommandBuffer>(
       host, factory->GetGpuMemoryBufferManager(), content::kGpuStreamIdDefault,
-      gpu::SchedulingPriority::kLow, surface_handle,
+      gpu::SchedulingPriority::kNormal, surface_handle,
       GURL(std::string("electron://gpu/command_buffer")),
-      false /* automatic flushes */, false /* support locking */,
+      true /* automatic flushes */, false /* support locking */,
       false /* support grcontext */, gpu::SharedMemoryLimits(), helper,
       viz::command_buffer_metrics::ContextType::RENDER_COMPOSITOR);
 
   gpu::ContextResult bind_result = context_provider_->BindToCurrentThread();
   // TODO: we could handle transient failures and retry
   if (bind_result == gpu::ContextResult::kSuccess) {
+    const auto& context_capabilities = context_provider_->ContextCapabilities();
+    should_set_draw_rectangle_ = context_capabilities.dc_layers;
+
+#if defined(OS_MACOSX)
+    overlay_surface_ = new OverlaySurface(context_provider_, surface_handle);
+#endif
+
     return true;
   } else {
     context_provider_.reset();

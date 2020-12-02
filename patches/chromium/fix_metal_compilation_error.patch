@@ -1,0 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Wed, 2 Dec 2020 23:56:31 +0100
+Subject: fix_metal_compilation_error
+
+
+diff --git a/components/viz/common/gpu/metal_api_proxy.mm b/components/viz/common/gpu/metal_api_proxy.mm
+index 1d23a9ab9e40ed6ec116a3b62e31999043ae74b8..fab3e24905eb13c8b36b75ca2b322d71ee010e5c 100644
+--- a/components/viz/common/gpu/metal_api_proxy.mm
++++ b/components/viz/common/gpu/metal_api_proxy.mm
+@@ -587,6 +587,11 @@ -(R)fn : (A0)a0 a1 : (A1)a1 a2 : (A2)a2 a3 : (A3)a3 {                   \
+ PROXY_METHOD0(uint32_t, peerCount)
+ PROXY_METHOD0(nullable NSArray<id<MTLCounterSet>>*, counterSets)
+ PROXY_METHOD1(BOOL, supportsFamily, MTLGPUFamily)
++PROXY_METHOD1(BOOL, supportsRasterizationRateMapWithLayerCount, NSUInteger)
++PROXY_METHOD1(nullable id<MTLRasterizationRateMap>,
++              newRasterizationRateMapWithDescriptor,
++              MTLRasterizationRateMapDescriptor*)
++PROXY_METHOD1(BOOL, supportsVertexAmplificationCount, NSUInteger)
+ PROXY_METHOD2_SLOW(nullable id<MTLCounterSampleBuffer>,
+                    newCounterSampleBufferWithDescriptor,
+                    MTLCounterSampleBufferDescriptor*,

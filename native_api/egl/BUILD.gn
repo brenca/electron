@@ -11,18 +11,26 @@ source_set("egl") {
     "display.cc",
     "display.h",
     "egl.cc",
+    "ns_window_bridge.h",
+    "ns_window_bridge.mm",
+    "overlay_surface.cc",
+    "overlay_surface.h",
     "surface.cc",
     "surface.h",
+    "surface_mac.mm",
     "thread_state.cc",
     "thread_state.h",
   ]
 
   configs += [ "//build/config/compiler:no_size_t_to_int_warning" ]
 
-  defines = [
-    "EGLAPI=__declspec(dllexport)",
-    "EGLAPIENTRY=",
-  ]
+  defines = [ "EGLAPIENTRY=" ]
+
+  if (is_win) {
+    defines += [ "EGLAPI=__declspec(dllexport)" ]
+  } else {
+    defines += [ "EGLAPI=__attribute__((visibility(\"default\")))" ]
+  }
 
   deps = [
     "//base",
@@ -38,4 +46,8 @@ source_set("egl") {
     "//ui/gl",
     "//ui/gl/init",
   ]
+
+  if (is_mac) {
+    deps += [ "//ui/accelerated_widget_mac" ]
+  }
 }

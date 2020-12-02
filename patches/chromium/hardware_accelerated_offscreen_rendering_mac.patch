@@ -1,0 +1,1108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Benedek Heilig <benecene@gmail.com>
+Date: Wed, 2 Dec 2020 23:49:57 +0100
+Subject: Additional changes to enable hardware accelerated offscrren rendering
+ on MacOS
+
+diff --git a/components/viz/common/BUILD.gn b/components/viz/common/BUILD.gn
+index 6eddee676a962fd870228ca5a7b68f7b782d6e8e..a82b7dbbb94324f1212a16bdf7feeb6704a076a9 100644
+--- a/components/viz/common/BUILD.gn
++++ b/components/viz/common/BUILD.gn
+@@ -4,6 +4,7 @@
+ 
+ import("//components/viz/viz.gni")
+ import("//gpu/vulkan/features.gni")
++import("//mojo/public/tools/bindings/mojom.gni")
+ import("//skia/features.gni")
+ import("//testing/test.gni")
+ 
+@@ -13,6 +14,16 @@ source_set("resource_format") {
+   ]
+ }
+ 
++mojom("single_release_callback") {
++  sources = [
++    "resources/single_release_callback.mojom",
++  ]
++
++  public_deps = [
++    "//gpu/ipc/common:interfaces",
++  ]
++}
++
+ viz_component("resource_format_utils") {
+   output_name = "viz_resource_format_utils"
+ 
+@@ -294,6 +305,7 @@ viz_component("common") {
+     "//mojo/public/cpp/base",
+     "//mojo/public/cpp/system",
+     "//services/tracing/public/cpp:cpp",
++    ":single_release_callback",
+     "//third_party/libyuv",
+     "//ui/gfx",
+     "//ui/gfx:color_space",
+diff --git a/components/viz/common/resources/single_release_callback.h b/components/viz/common/resources/single_release_callback.h
+index 1eb2d9bb7fa43658ff7e9c610bd44a73f2a7afdc..76a32ed3ca5fa3e4077b7038b76695bd1cc499a5 100644
+--- a/components/viz/common/resources/single_release_callback.h
++++ b/components/viz/common/resources/single_release_callback.h
+@@ -10,7 +10,7 @@
+ #include "base/memory/ptr_util.h"
+ #include "components/viz/common/resources/release_callback.h"
+ #include "components/viz/common/viz_common_export.h"
+-#include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
++#include "components/viz/common/resources/single_release_callback.mojom.h"
+ 
+ namespace viz {
+ 
+diff --git a/components/viz/common/resources/single_release_callback.mojom b/components/viz/common/resources/single_release_callback.mojom
+new file mode 100644
+index 0000000000000000000000000000000000000000..5363322dbb21e9b8272f7fbd2efc4d6641daf4ac
+--- /dev/null
++++ b/components/viz/common/resources/single_release_callback.mojom
+@@ -0,0 +1,11 @@
++// Copyright 2017 The Chromium Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++module viz.mojom;
++
++import "gpu/ipc/common/sync_token.mojom";
++
++interface SingleReleaseCallback {
++  Run(gpu.mojom.SyncToken sync_token, bool is_lost);
++};
+diff --git a/components/viz/service/display_embedder/gl_output_surface_offscreen.cc b/components/viz/service/display_embedder/gl_output_surface_offscreen.cc
+index bc5455cc28a00c347a8af7f357271db490e52ee4..05cb43bf8cc2e16f8402879b27ce1a38519ef910 100644
+--- a/components/viz/service/display_embedder/gl_output_surface_offscreen.cc
++++ b/components/viz/service/display_embedder/gl_output_surface_offscreen.cc
+@@ -6,6 +6,8 @@
+ 
+ #include <stdint.h>
+ 
++#include <vector>
++
+ #include "base/bind.h"
+ #include "components/viz/common/resources/resource_format_utils.h"
+ #include "components/viz/common/resources/single_release_callback.h"
+@@ -15,6 +17,7 @@
+ #include "gpu/command_buffer/client/gles2_interface.h"
+ #include "gpu/command_buffer/client/shared_image_interface.h"
+ #include "gpu/command_buffer/common/shared_image_usage.h"
++#include "gpu/GLES2/gl2extchromium.h"
+ #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+ #include "third_party/khronos/GLES2/gl2.h"
+ #include "third_party/khronos/GLES2/gl2ext.h"
+@@ -23,78 +26,166 @@
+ namespace viz {
+ namespace {
+ 
+-constexpr ResourceFormat kFboTextureFormat = RGBA_8888;
++constexpr ResourceFormat kFboTextureFormat = BGRA_8888;
+ 
+ }  // namespace
+ 
+-GLOutputSurfaceOffscreen::GLOutputSurfaceOffscreen(
++GLOutputSurfaceOffscreen::BufferQueue::BufferQueue(
+     scoped_refptr<VizProcessContextProvider> context_provider)
+-    : GLOutputSurface(context_provider, gpu::kNullSurfaceHandle) {}
++    : context_provider_(context_provider),
++      allocated_count_(0) {}
+ 
+-GLOutputSurfaceOffscreen::~GLOutputSurfaceOffscreen() {
+-  DiscardBackbuffer();
++GLOutputSurfaceOffscreen::BufferQueue::~BufferQueue() {
++  FreeAllSurfaces();
+ }
+ 
+-void GLOutputSurfaceOffscreen::EnsureBackbuffer() {
+-  if (size_.IsEmpty())
+-    return;
+-
+-  if (!texture_id_) {
+-    gpu::SharedImageInterface* sii = context_provider_->SharedImageInterface();
+-    gpu::gles2::GLES2Interface* gl = context_provider_->ContextGL();
++gpu::Mailbox GLOutputSurfaceOffscreen::BufferQueue::GetCurrentBuffer(
++    gpu::SyncToken* creation_sync_token) {
++  DCHECK(creation_sync_token);
++  if (!current_surface_)
++    current_surface_ = GetNextSurface(creation_sync_token);
++  return current_surface_ ? *current_surface_ : gpu::Mailbox();
++}
+ 
+-    const int max_texture_size =
+-        context_provider_->ContextCapabilities().max_texture_size;
+-    gfx::Size texture_size(std::min(size_.width(), max_texture_size),
+-                           std::min(size_.height(), max_texture_size));
++void GLOutputSurfaceOffscreen::BufferQueue::SwapBuffers() {
++  in_flight_surfaces_.push_back(std::move(current_surface_));
++}
+ 
+-    const uint32_t flags = gpu::SHARED_IMAGE_USAGE_GLES2 |
+-                           gpu::SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
+-                           gpu::SHARED_IMAGE_USAGE_DISPLAY;
+-    mailbox_ = sii->CreateSharedImage(kFboTextureFormat, texture_size,
+-                                      color_space_, flags);
++void GLOutputSurfaceOffscreen::BufferQueue::PageFlipComplete() {
++  DCHECK(!in_flight_surfaces_.empty());
++  if (in_flight_surfaces_.front()) {
++    if (displayed_surface_)
++      available_surfaces_.push_back(std::move(displayed_surface_));
++    displayed_surface_ = std::move(in_flight_surfaces_.front());
++  }
+ 
+-    // Ensure mailbox is valid before using it.
+-    gpu::SyncToken token;
+-    gl->GenUnverifiedSyncTokenCHROMIUM(token.GetData());
+-    gl->WaitSyncTokenCHROMIUM(token.GetConstData());
++  in_flight_surfaces_.pop_front();
++}
+ 
+-    texture_id_ = gl->CreateAndTexStorage2DSharedImageCHROMIUM(mailbox_.name);
++void GLOutputSurfaceOffscreen::BufferQueue::FreeAllSurfaces() {
++  const gpu::SyncToken destruction_sync_token = GenSyncToken();
++  FreeSurface(std::move(displayed_surface_), destruction_sync_token);
++  FreeSurface(std::move(current_surface_), destruction_sync_token);
+ 
+-    gl->GenFramebuffers(1, &fbo_);
+-    gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+-    gl->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+-                             GL_TEXTURE_2D, texture_id_, 0);
++  // This is intentionally not emptied since the swap buffers acks are still
++  // expected to arrive.
++  for (auto& surface : in_flight_surfaces_) {
++    FreeSurface(std::move(surface), destruction_sync_token);
++  }
+ 
+-    if (display_client_) {
+-      display_client_->BackingTextureCreated(mailbox_);
+-    }
++  for (auto& surface : available_surfaces_) {
++    FreeSurface(std::move(surface), destruction_sync_token);
+   }
++  available_surfaces_.clear();
+ }
+ 
+-void GLOutputSurfaceOffscreen::DiscardBackbuffer() {
+-  if (fbo_) {
+-    gpu::gles2::GLES2Interface* gl = context_provider_->ContextGL();
+-    gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+-    gl->DeleteFramebuffers(1, &fbo_);
+-    fbo_ = 0;
++bool GLOutputSurfaceOffscreen::BufferQueue::Reshape(
++    const gfx::Size& size, const gfx::ColorSpace& color_space) {
++  if (size == size_ && color_space == color_space_)
++    return false;
++
++  const int max_texture_size =
++      context_provider_->ContextCapabilities().max_texture_size;
++  gfx::Size texture_size(std::min(size.width(), max_texture_size),
++                         std::min(size.height(), max_texture_size));
++
++  size_ = texture_size;
++  color_space_ = color_space;
++
++  FreeAllSurfaces();
++  return true;
++}
++
++void GLOutputSurfaceOffscreen::BufferQueue::FreeSurface(
++    std::unique_ptr<gpu::Mailbox> surface, const gpu::SyncToken& sync_token) {
++  if (!surface)
++    return;
++  gpu::SharedImageInterface* sii = context_provider_->SharedImageInterface();
++  sii->DestroySharedImage(sync_token, *surface);
++  allocated_count_--;
++}
++
++std::unique_ptr<gpu::Mailbox>
++GLOutputSurfaceOffscreen::BufferQueue::GetNextSurface(
++    gpu::SyncToken* creation_sync_token) {
++  DCHECK(creation_sync_token);
++  if (!available_surfaces_.empty()) {
++    std::unique_ptr<gpu::Mailbox> surface =
++        std::move(available_surfaces_.back());
++    available_surfaces_.pop_back();
++    return surface;
+   }
+ 
+-  if (texture_id_) {
+-    gpu::SharedImageInterface* sii = context_provider_->SharedImageInterface();
+-    sii->DestroySharedImage(gpu::SyncToken(), mailbox_);
+-    mailbox_.SetZero();
+-    texture_id_ = 0;
++  // We don't want to allow anything more than triple buffering.
++  DCHECK_LT(allocated_count_, max_buffers_);
++
++  gpu::SharedImageInterface* sii = context_provider_->SharedImageInterface();
++  const uint32_t flags = gpu::SHARED_IMAGE_USAGE_GLES2 |
++                         gpu::SHARED_IMAGE_USAGE_GLES2_FRAMEBUFFER_HINT |
++                         gpu::SHARED_IMAGE_USAGE_DISPLAY;
++  const gpu::Mailbox mailbox = sii->CreateSharedImage(
++      kFboTextureFormat, size_, color_space_, flags);
++
++  if (mailbox.IsZero()) {
++    LOG(ERROR) << "Failed to create SharedImage";
++    return nullptr;
+   }
++
++  allocated_count_++;
++  *creation_sync_token = sii->GenUnverifiedSyncToken();
++  return std::make_unique<gpu::Mailbox>(mailbox);
++}
++
++gpu::SyncToken GLOutputSurfaceOffscreen::BufferQueue::GenSyncToken() {
++  return context_provider_->SharedImageInterface()->GenUnverifiedSyncToken();
++}
++
++GLOutputSurfaceOffscreen::GLOutputSurfaceOffscreen(
++    scoped_refptr<VizProcessContextProvider> context_provider)
++    : GLOutputSurface(context_provider, gpu::kNullSurfaceHandle),
++      buffer_queue_(context_provider) {
++  context_provider_->ContextGL()->GenFramebuffers(1, &fbo_);
++}
++
++GLOutputSurfaceOffscreen::~GLOutputSurfaceOffscreen() {
++  auto* gl = context_provider_->ContextGL();
++  gl->DeleteFramebuffers(1, &fbo_);
++
++  for (const auto& buffer_texture : buffer_queue_textures_)
++    gl->DeleteTextures(1u, &buffer_texture.second);
++  buffer_queue_textures_.clear();
++  current_texture_ = 0u;
++  last_bound_mailbox_.SetZero();
++
++  fbo_ = 0u;
+ }
+ 
+ void GLOutputSurfaceOffscreen::BindFramebuffer() {
+-  if (!texture_id_) {
+-    EnsureBackbuffer();
+-  } else {
+-    gpu::gles2::GLES2Interface* gl = context_provider_->ContextGL();
+-    gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
++  auto* gl = context_provider_->ContextGL();
++  gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
++
++  if (current_texture_)
++    return;
++
++  gpu::SyncToken creation_sync_token;
++  const gpu::Mailbox current_buffer =
++      buffer_queue_.GetCurrentBuffer(&creation_sync_token);
++  if (current_buffer.IsZero())
++    return;
++  gl->WaitSyncTokenCHROMIUM(creation_sync_token.GetConstData());
++  unsigned& buffer_texture = buffer_queue_textures_[current_buffer];
++  if (!buffer_texture) {
++    buffer_texture =
++        gl->CreateAndTexStorage2DSharedImageCHROMIUM(current_buffer.name);
+   }
++  current_texture_ = buffer_texture;
++  gl->BeginSharedImageAccessDirectCHROMIUM(
++      current_texture_, GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM);
++  gl->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                           GL_TEXTURE_2D, current_texture_, 0);
++  if (last_bound_mailbox_ != current_buffer)
++    display_client_->BackingTextureCreated(current_buffer);
++  last_bound_mailbox_ = current_buffer;
+ }
+ 
+ void GLOutputSurfaceOffscreen::Reshape(const gfx::Size& size,
+@@ -102,40 +193,63 @@ void GLOutputSurfaceOffscreen::Reshape(const gfx::Size& size,
+                                        const gfx::ColorSpace& color_space,
+                                        bool alpha,
+                                        bool stencil) {
+-  size_ = size;
+-  color_space_ = color_space;
+-  DiscardBackbuffer();
+-  EnsureBackbuffer();
++  const bool may_have_freed_buffers = buffer_queue_.Reshape(size, color_space);
++  if (may_have_freed_buffers) {
++    auto* gl = context_provider_->ContextGL();
++    gl->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
++
++    // Note that |texture_target_| is initially set to 0, and so if it has not
++    // been set to a valid value, then no buffers have been allocated.
++    if (may_have_freed_buffers) {
++      gl->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                               GL_TEXTURE_2D, 0, 0);
++      for (const auto& buffer_texture : buffer_queue_textures_)
++        gl->DeleteTextures(1u, &buffer_texture.second);
++      buffer_queue_textures_.clear();
++      current_texture_ = 0u;
++      last_bound_mailbox_.SetZero();
++    }
++  }
+ }
+ 
+ void GLOutputSurfaceOffscreen::SwapBuffers(OutputSurfaceFrame frame) {
+-  DCHECK(frame.size == size_);
+-
+-  gpu::gles2::GLES2Interface* gl = context_provider_->ContextGL();
+-
+-  if (texture_id_ && display_client_) {
+-    mojo::PendingRemote<mojom::SingleReleaseCallback> callback;
+-    mojo::MakeSelfOwnedReceiver(
+-        viz::SingleReleaseCallback::Create(base::BindOnce(
+-            &GLOutputSurfaceOffscreen::OnFramebufferCopyComplete,
+-            weak_ptr_factory_.GetWeakPtr(),
+-            std::move(frame.latency_info))),
+-        callback.InitWithNewPipeAndPassReceiver());
+-
+-    gpu::SyncToken sync_token;
+-    gl->GenSyncTokenCHROMIUM(sync_token.GetData());
+-
+-    display_client_->OnSwapBuffers(
+-        size_, std::move(sync_token), std::move(callback));
+-  } else {
+-    gpu::SyncToken sync_token;
+-    gl->GenUnverifiedSyncTokenCHROMIUM(sync_token.GetData());
+-
+-    context_provider_->ContextSupport()->SignalSyncToken(
+-        sync_token,
+-        base::BindOnce(&GLOutputSurfaceOffscreen::OnSwapBuffersComplete,
+-                       weak_ptr_factory_.GetWeakPtr(),
+-                       std::move(frame.latency_info)));
++  auto* gl = context_provider_->ContextGL();
++
++  if (frame.size == buffer_queue_.size()) {
++    if (current_texture_) {
++      gl->EndSharedImageAccessDirectCHROMIUM(current_texture_);
++      gl->BindFramebuffer(GL_FRAMEBUFFER, 0u);
++      current_texture_ = 0u;
++    }
++
++    if (display_client_) {
++      mojo::PendingRemote<mojom::SingleReleaseCallback> callback;
++      mojo::MakeSelfOwnedReceiver(
++          viz::SingleReleaseCallback::Create(base::BindOnce(
++              &GLOutputSurfaceOffscreen::OnFramebufferCopyComplete,
++              weak_ptr_factory_.GetWeakPtr(),
++              std::move(frame.latency_info))),
++          callback.InitWithNewPipeAndPassReceiver());
++
++      gpu::SyncToken sync_token;
++      gl->GenSyncTokenCHROMIUM(sync_token.GetData());
++
++      buffer_queue_.SwapBuffers();
++      SignalBufferSwap(std::move(frame.latency_info));
++
++      display_client_->OnSwapBuffers(
++          buffer_queue_.size(), std::move(sync_token), std::move(callback));
++    } else {
++      gpu::SyncToken sync_token;
++      gl->GenUnverifiedSyncTokenCHROMIUM(sync_token.GetData());
++
++      buffer_queue_.SwapBuffers();
++      context_provider_->ContextSupport()->SignalSyncToken(
++          sync_token,
++          base::BindOnce(&GLOutputSurfaceOffscreen::OnSwapBuffersComplete,
++                         weak_ptr_factory_.GetWeakPtr(),
++                         std::move(frame.latency_info)));
++    }
+   }
+ }
+ 
+@@ -143,15 +257,19 @@ void GLOutputSurfaceOffscreen::OnFramebufferCopyComplete(
+     std::vector<ui::LatencyInfo> latency_info,
+     const gpu::SyncToken& sync_token,
+     bool is_lost) {
+-  context_provider_->ContextSupport()->SignalSyncToken(
+-      sync_token,
+-      base::BindOnce(&GLOutputSurfaceOffscreen::OnSwapBuffersComplete,
+-                     weak_ptr_factory_.GetWeakPtr(),
+-                     std::move(latency_info)));
++  BufferQueueSwapComplete();
++  auto* gl = context_provider_->ContextGL();
++  gl->WaitSyncTokenCHROMIUM(sync_token.GetConstData());
+ }
+ 
+ void GLOutputSurfaceOffscreen::OnSwapBuffersComplete(
+     std::vector<ui::LatencyInfo> latency_info) {
++  BufferQueueSwapComplete();
++  SignalBufferSwap(std::move(latency_info));
++}
++
++void GLOutputSurfaceOffscreen::SignalBufferSwap(
++    std::vector<ui::LatencyInfo> latency_info) {
+   latency_tracker()->OnGpuSwapBuffersCompleted(latency_info);
+   // Swap timings are not available since for offscreen there is no Swap, just a
+   // SignalSyncToken. We use base::TimeTicks::Now() as an overestimate.
+@@ -161,7 +279,11 @@ void GLOutputSurfaceOffscreen::OnSwapBuffersComplete(
+       now, base::TimeDelta::FromMilliseconds(16), /*flags=*/0));
+ 
+   if (needs_swap_size_notifications())
+-    client()->DidSwapWithSize(size_);
++    client()->DidSwapWithSize(buffer_queue_.size());
++}
++
++void GLOutputSurfaceOffscreen::BufferQueueSwapComplete() {
++  buffer_queue_.PageFlipComplete();
+ }
+ 
+ }  // namespace viz
+diff --git a/components/viz/service/display_embedder/gl_output_surface_offscreen.h b/components/viz/service/display_embedder/gl_output_surface_offscreen.h
+index 1780ab75c0b9d970066fe197d5721f21dfbdb4f8..4aa5fa35894e02a32d760213d72dd578f23b15d8 100644
+--- a/components/viz/service/display_embedder/gl_output_surface_offscreen.h
++++ b/components/viz/service/display_embedder/gl_output_surface_offscreen.h
+@@ -26,8 +26,6 @@ class VIZ_SERVICE_EXPORT GLOutputSurfaceOffscreen : public GLOutputSurface {
+   ~GLOutputSurfaceOffscreen() override;
+ 
+   // OutputSurface implementation.
+-  void EnsureBackbuffer() override;
+-  void DiscardBackbuffer() override;
+   void BindFramebuffer() override;
+   void Reshape(const gfx::Size& size,
+                float scale_factor,
+@@ -40,20 +38,57 @@ class VIZ_SERVICE_EXPORT GLOutputSurfaceOffscreen : public GLOutputSurface {
+   }
+ 
+  private:
++  class BufferQueue {
++   public:
++    BufferQueue(scoped_refptr<VizProcessContextProvider> context_provider);
++    ~BufferQueue();
++
++    gpu::Mailbox GetCurrentBuffer(gpu::SyncToken* creation_sync_token);
++    void SwapBuffers();
++    void PageFlipComplete();
++    void FreeAllSurfaces();
++    bool Reshape(const gfx::Size& size, const gfx::ColorSpace& color_space);
++
++    const gfx::Size& size() { return size_; }
++
++   private:
++    void FreeSurface(std::unique_ptr<gpu::Mailbox> surface,
++                     const gpu::SyncToken& sync_token);
++    std::unique_ptr<gpu::Mailbox> GetNextSurface(
++        gpu::SyncToken* creation_sync_token);
++    gpu::SyncToken GenSyncToken();
++
++    scoped_refptr<VizProcessContextProvider> context_provider_;
++
++    gfx::Size size_;
++    gfx::ColorSpace color_space_;
++
++    size_t max_buffers_ = 3U;
++    size_t allocated_count_;
++
++    std::unique_ptr<gpu::Mailbox> current_surface_;
++    std::unique_ptr<gpu::Mailbox> displayed_surface_;
++    std::vector<std::unique_ptr<gpu::Mailbox>> available_surfaces_;
++    base::circular_deque<std::unique_ptr<gpu::Mailbox>> in_flight_surfaces_;
++  };
++
+   void OnFramebufferCopyComplete(std::vector<ui::LatencyInfo> latency_info,
+                                  const gpu::SyncToken& sync_token,
+                                  bool is_lost);
+ 
+   void OnSwapBuffersComplete(std::vector<ui::LatencyInfo> latency_info);
+ 
+-  gpu::Mailbox mailbox_;
++  void SignalBufferSwap(std::vector<ui::LatencyInfo> latency_info);
++  void BufferQueueSwapComplete();
++
++  BufferQueue buffer_queue_;
++  base::flat_map<gpu::Mailbox, unsigned> buffer_queue_textures_;
++  unsigned current_texture_ = 0u;
++  gpu::Mailbox last_bound_mailbox_;
+ 
+   mojom::DisplayClient* display_client_ = nullptr;
+ 
+   uint32_t fbo_ = 0;
+-  uint32_t texture_id_ = 0;
+-  gfx::Size size_;
+-  gfx::ColorSpace color_space_;
+ 
+   base::WeakPtrFactory<GLOutputSurfaceOffscreen> weak_ptr_factory_{this};
+ 
+diff --git a/gpu/GLES2/gl2chromium_autogen.h b/gpu/GLES2/gl2chromium_autogen.h
+index d3bcadd5c69c36e780bf19867b397ab37016026a..dc8331139165c8714b20015c7103f69e4da88684 100644
+--- a/gpu/GLES2/gl2chromium_autogen.h
++++ b/gpu/GLES2/gl2chromium_autogen.h
+@@ -435,5 +435,6 @@
+   GLES2_GET_FUN(BeginSharedImageAccessDirectCHROMIUM)
+ #define glEndSharedImageAccessDirectCHROMIUM \
+   GLES2_GET_FUN(EndSharedImageAccessDirectCHROMIUM)
++#define glFramebufferBackbuffer GLES2_GET_FUN(FramebufferBackbuffer)
+ 
+ #endif  // GPU_GLES2_GL2CHROMIUM_AUTOGEN_H_
+diff --git a/gpu/command_buffer/build_gles2_cmd_buffer.py b/gpu/command_buffer/build_gles2_cmd_buffer.py
+index 7705e56fc3f192a8728d5d48c76ba5bb1c9d72b9..a6becd8de54fd59ffcb2341f139e226d963ed598 100755
+--- a/gpu/command_buffer/build_gles2_cmd_buffer.py
++++ b/gpu/command_buffer/build_gles2_cmd_buffer.py
+@@ -4411,6 +4411,10 @@ _FUNCTION_INFO = {
+     'decoder_func': 'DoEndSharedImageAccessDirectCHROMIUM',
+     'extension': 'CHROMIUM_shared_image',
+     'unit_test': False,
++  },
++  'FramebufferBackbuffer': {
++    'decoder_func': 'DoFramebufferBackbuffer',
++    'unit_test': False,
+   }
+ }
+ 
+diff --git a/gpu/command_buffer/client/gles2_c_lib_autogen.h b/gpu/command_buffer/client/gles2_c_lib_autogen.h
+index d6e0485819ba54921e6e0a2660fd2f436a63b82b..5558926df9c88c0a1cd60ce2059e1648bc4622bc 100644
+--- a/gpu/command_buffer/client/gles2_c_lib_autogen.h
++++ b/gpu/command_buffer/client/gles2_c_lib_autogen.h
+@@ -1988,6 +1988,9 @@ void GL_APIENTRY GLES2BeginSharedImageAccessDirectCHROMIUM(GLuint texture,
+ void GL_APIENTRY GLES2EndSharedImageAccessDirectCHROMIUM(GLuint texture) {
+   gles2::GetGLContext()->EndSharedImageAccessDirectCHROMIUM(texture);
+ }
++void GL_APIENTRY GLES2FramebufferBackbuffer(GLuint framebuffer) {
++  gles2::GetGLContext()->FramebufferBackbuffer(framebuffer);
++}
+ 
+ namespace gles2 {
+ 
+@@ -3524,6 +3527,10 @@ extern const NameToFunc g_gles2_function_table[] = {
+         reinterpret_cast<GLES2FunctionPointer>(
+             glEndSharedImageAccessDirectCHROMIUM),
+     },
++    {
++        "glFramebufferBackbuffer",
++        reinterpret_cast<GLES2FunctionPointer>(glFramebufferBackbuffer),
++    },
+     {
+         nullptr,
+         nullptr,
+diff --git a/gpu/command_buffer/client/gles2_cmd_helper_autogen.h b/gpu/command_buffer/client/gles2_cmd_helper_autogen.h
+index 4c50bbfd008520077f851e6a0a61fdd045494dc2..33392000a93cf8c916c5b5e4f5435f1a1bd61170 100644
+--- a/gpu/command_buffer/client/gles2_cmd_helper_autogen.h
++++ b/gpu/command_buffer/client/gles2_cmd_helper_autogen.h
+@@ -3674,4 +3674,12 @@ void EndSharedImageAccessDirectCHROMIUM(GLuint texture) {
+   }
+ }
+ 
++void FramebufferBackbuffer(GLuint framebuffer) {
++  gles2::cmds::FramebufferBackbuffer* c =
++      GetCmdSpace<gles2::cmds::FramebufferBackbuffer>();
++  if (c) {
++    c->Init(framebuffer);
++  }
++}
++
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_CMD_HELPER_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_implementation_autogen.h b/gpu/command_buffer/client/gles2_implementation_autogen.h
+index 109e29e43c0c42abe4b54e7266cd454e32f237fd..492ade0765150b2156e8f6425d115a3740351ed4 100644
+--- a/gpu/command_buffer/client/gles2_implementation_autogen.h
++++ b/gpu/command_buffer/client/gles2_implementation_autogen.h
+@@ -1399,4 +1399,6 @@ void BeginSharedImageAccessDirectCHROMIUM(GLuint texture, GLenum mode) override;
+ 
+ void EndSharedImageAccessDirectCHROMIUM(GLuint texture) override;
+ 
++void FramebufferBackbuffer(GLuint framebuffer) override;
++
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_IMPLEMENTATION_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_implementation_impl_autogen.h b/gpu/command_buffer/client/gles2_implementation_impl_autogen.h
+index ea02c67be96038798d44a83489374389e2d0a577..372f654f40a07d927b8a85f1f4275bdc18e15c10 100644
+--- a/gpu/command_buffer/client/gles2_implementation_impl_autogen.h
++++ b/gpu/command_buffer/client/gles2_implementation_impl_autogen.h
+@@ -3851,4 +3851,12 @@ void GLES2Implementation::EndSharedImageAccessDirectCHROMIUM(GLuint texture) {
+   CheckGLError();
+ }
+ 
++void GLES2Implementation::FramebufferBackbuffer(GLuint framebuffer) {
++  GPU_CLIENT_SINGLE_THREAD_CHECK();
++  GPU_CLIENT_LOG("[" << GetLogPrefix() << "] glFramebufferBackbuffer("
++                     << framebuffer << ")");
++  helper_->FramebufferBackbuffer(framebuffer);
++  CheckGLError();
++}
++
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_IMPLEMENTATION_IMPL_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_implementation_unittest_autogen.h b/gpu/command_buffer/client/gles2_implementation_unittest_autogen.h
+index b83aaedf4cf70fc403d0678cc73b133a1a307ab0..45dacf502d8affb7b226214de29b89cef53c9fb6 100644
+--- a/gpu/command_buffer/client/gles2_implementation_unittest_autogen.h
++++ b/gpu/command_buffer/client/gles2_implementation_unittest_autogen.h
+@@ -3270,4 +3270,15 @@ TEST_F(GLES2ImplementationTest, EndSharedImageAccessDirectCHROMIUM) {
+   gl_->EndSharedImageAccessDirectCHROMIUM(1);
+   EXPECT_EQ(0, memcmp(&expected, commands_, sizeof(expected)));
+ }
++
++TEST_F(GLES2ImplementationTest, FramebufferBackbuffer) {
++  struct Cmds {
++    cmds::FramebufferBackbuffer cmd;
++  };
++  Cmds expected;
++  expected.cmd.Init(1);
++
++  gl_->FramebufferBackbuffer(1);
++  EXPECT_EQ(0, memcmp(&expected, commands_, sizeof(expected)));
++}
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_IMPLEMENTATION_UNITTEST_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_interface_autogen.h b/gpu/command_buffer/client/gles2_interface_autogen.h
+index 7d055f33c226b964b79ba1c25e11a04e9f5e4c03..47e50f698e587bec820b04618ae7701b20dec269 100644
+--- a/gpu/command_buffer/client/gles2_interface_autogen.h
++++ b/gpu/command_buffer/client/gles2_interface_autogen.h
+@@ -1058,4 +1058,5 @@ virtual GLuint CreateAndTexStorage2DSharedImageWithInternalFormatCHROMIUM(
+ virtual void BeginSharedImageAccessDirectCHROMIUM(GLuint texture,
+                                                   GLenum mode) = 0;
+ virtual void EndSharedImageAccessDirectCHROMIUM(GLuint texture) = 0;
++virtual void FramebufferBackbuffer(GLuint framebuffer) = 0;
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_INTERFACE_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_interface_stub_autogen.h b/gpu/command_buffer/client/gles2_interface_stub_autogen.h
+index 637c3afdb81bea4c870dca15c6041a6a88e5042e..0b20ec5e34b63dd795a27db57a7816440a066ed6 100644
+--- a/gpu/command_buffer/client/gles2_interface_stub_autogen.h
++++ b/gpu/command_buffer/client/gles2_interface_stub_autogen.h
+@@ -1024,4 +1024,5 @@ GLuint CreateAndTexStorage2DSharedImageWithInternalFormatCHROMIUM(
+     GLenum internalformat) override;
+ void BeginSharedImageAccessDirectCHROMIUM(GLuint texture, GLenum mode) override;
+ void EndSharedImageAccessDirectCHROMIUM(GLuint texture) override;
++void FramebufferBackbuffer(GLuint framebuffer) override;
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_INTERFACE_STUB_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h b/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h
+index 20857b8c3434458c17aa8e6ca58b4e05ecf6e8d2..1f7fdbda53af8b785e7d24b2301cf2d9281aa7cf 100644
+--- a/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h
++++ b/gpu/command_buffer/client/gles2_interface_stub_impl_autogen.h
+@@ -1359,4 +1359,5 @@ void GLES2InterfaceStub::BeginSharedImageAccessDirectCHROMIUM(
+     GLenum /* mode */) {}
+ void GLES2InterfaceStub::EndSharedImageAccessDirectCHROMIUM(
+     GLuint /* texture */) {}
++void GLES2InterfaceStub::FramebufferBackbuffer(GLuint /* framebuffer */) {}
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_INTERFACE_STUB_IMPL_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_trace_implementation_autogen.h b/gpu/command_buffer/client/gles2_trace_implementation_autogen.h
+index 75637ef77b0dc37987bfa0095e168ea18d909cab..55eda98aa5da85f3abecb37ac7420b663eccbdb7 100644
+--- a/gpu/command_buffer/client/gles2_trace_implementation_autogen.h
++++ b/gpu/command_buffer/client/gles2_trace_implementation_autogen.h
+@@ -1024,4 +1024,5 @@ GLuint CreateAndTexStorage2DSharedImageWithInternalFormatCHROMIUM(
+     GLenum internalformat) override;
+ void BeginSharedImageAccessDirectCHROMIUM(GLuint texture, GLenum mode) override;
+ void EndSharedImageAccessDirectCHROMIUM(GLuint texture) override;
++void FramebufferBackbuffer(GLuint framebuffer) override;
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_TRACE_IMPLEMENTATION_AUTOGEN_H_
+diff --git a/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h b/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h
+index 7f13e0254e4fa6ab029680eaf9c0aed23f4b55be..1e4cc8c99b97a4d29f533f7a98889669dde61e50 100644
+--- a/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h
++++ b/gpu/command_buffer/client/gles2_trace_implementation_impl_autogen.h
+@@ -2861,4 +2861,9 @@ void GLES2TraceImplementation::EndSharedImageAccessDirectCHROMIUM(
+   gl_->EndSharedImageAccessDirectCHROMIUM(texture);
+ }
+ 
++void GLES2TraceImplementation::FramebufferBackbuffer(GLuint framebuffer) {
++  TRACE_EVENT_BINARY_EFFICIENT0("gpu", "GLES2Trace::FramebufferBackbuffer");
++  gl_->FramebufferBackbuffer(framebuffer);
++}
++
+ #endif  // GPU_COMMAND_BUFFER_CLIENT_GLES2_TRACE_IMPLEMENTATION_IMPL_AUTOGEN_H_
+diff --git a/gpu/command_buffer/common/gles2_cmd_format_autogen.h b/gpu/command_buffer/common/gles2_cmd_format_autogen.h
+index 3635c8ae56568537cf91d93ca267c3b16b6e1fa6..31a27ae3ada16c5db31e57dccc97c67f65d5d9b3 100644
+--- a/gpu/command_buffer/common/gles2_cmd_format_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_format_autogen.h
+@@ -18122,4 +18122,37 @@ static_assert(
+     offsetof(EndSharedImageAccessDirectCHROMIUM, texture) == 4,
+     "offset of EndSharedImageAccessDirectCHROMIUM texture should be 4");
+ 
++struct FramebufferBackbuffer {
++  typedef FramebufferBackbuffer ValueType;
++  static const CommandId kCmdId = kFramebufferBackbuffer;
++  static const cmd::ArgFlags kArgFlags = cmd::kFixed;
++  static const uint8_t cmd_flags = CMD_FLAG_SET_TRACE_LEVEL(3);
++
++  static uint32_t ComputeSize() {
++    return static_cast<uint32_t>(sizeof(ValueType));  // NOLINT
++  }
++
++  void SetHeader() { header.SetCmd<ValueType>(); }
++
++  void Init(GLuint _framebuffer) {
++    SetHeader();
++    framebuffer = _framebuffer;
++  }
++
++  void* Set(void* cmd, GLuint _framebuffer) {
++    static_cast<ValueType*>(cmd)->Init(_framebuffer);
++    return NextCmdAddress<ValueType>(cmd);
++  }
++
++  gpu::CommandHeader header;
++  uint32_t framebuffer;
++};
++
++static_assert(sizeof(FramebufferBackbuffer) == 8,
++              "size of FramebufferBackbuffer should be 8");
++static_assert(offsetof(FramebufferBackbuffer, header) == 0,
++              "offset of FramebufferBackbuffer header should be 0");
++static_assert(offsetof(FramebufferBackbuffer, framebuffer) == 4,
++              "offset of FramebufferBackbuffer framebuffer should be 4");
++
+ #endif  // GPU_COMMAND_BUFFER_COMMON_GLES2_CMD_FORMAT_AUTOGEN_H_
+diff --git a/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h b/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h
+index 43c019660e354ff0f7c6fc82a05c9974a008ea05..8530733430f8d1fb5077c5ee9b34cb140bd6d5a5 100644
+--- a/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_format_test_autogen.h
+@@ -5953,4 +5953,15 @@ TEST_F(GLES2FormatTest, EndSharedImageAccessDirectCHROMIUM) {
+   CheckBytesWrittenMatchesExpectedSize(next_cmd, sizeof(cmd));
+ }
+ 
++TEST_F(GLES2FormatTest, FramebufferBackbuffer) {
++  cmds::FramebufferBackbuffer& cmd =
++      *GetBufferAs<cmds::FramebufferBackbuffer>();
++  void* next_cmd = cmd.Set(&cmd, static_cast<GLuint>(11));
++  EXPECT_EQ(static_cast<uint32_t>(cmds::FramebufferBackbuffer::kCmdId),
++            cmd.header.command);
++  EXPECT_EQ(sizeof(cmd), cmd.header.size * 4u);
++  EXPECT_EQ(static_cast<GLuint>(11), cmd.framebuffer);
++  CheckBytesWrittenMatchesExpectedSize(next_cmd, sizeof(cmd));
++}
++
+ #endif  // GPU_COMMAND_BUFFER_COMMON_GLES2_CMD_FORMAT_TEST_AUTOGEN_H_
+diff --git a/gpu/command_buffer/common/gles2_cmd_ids_autogen.h b/gpu/command_buffer/common/gles2_cmd_ids_autogen.h
+index e2b7aa685490b52686d3e060c2cbdcfe83dec965..9fb09a7934c7c552bdf0460fd162202d05d0df63 100644
+--- a/gpu/command_buffer/common/gles2_cmd_ids_autogen.h
++++ b/gpu/command_buffer/common/gles2_cmd_ids_autogen.h
+@@ -367,7 +367,8 @@
+   OP(MaxShaderCompilerThreadsKHR)                              /* 608 */ \
+   OP(CreateAndTexStorage2DSharedImageINTERNALImmediate)        /* 609 */ \
+   OP(BeginSharedImageAccessDirectCHROMIUM)                     /* 610 */ \
+-  OP(EndSharedImageAccessDirectCHROMIUM)                       /* 611 */
++  OP(EndSharedImageAccessDirectCHROMIUM)                       /* 611 */ \
++  OP(FramebufferBackbuffer)                                    /* 612 */
+ 
+ enum CommandId {
+   kOneBeforeStartPoint =
+diff --git a/gpu/command_buffer/gles2_cmd_buffer_functions.txt b/gpu/command_buffer/gles2_cmd_buffer_functions.txt
+index 94aee8014c274ffb296bae5686997a99d7a14be2..a32665adc06f178af4ceb7fcf39fd367f93f6ba3 100644
+--- a/gpu/command_buffer/gles2_cmd_buffer_functions.txt
++++ b/gpu/command_buffer/gles2_cmd_buffer_functions.txt
+@@ -438,3 +438,6 @@ GL_APICALL GLuint       GL_APIENTRY glCreateAndTexStorage2DSharedImageWithIntern
+ GL_APICALL void         GL_APIENTRY glCreateAndTexStorage2DSharedImageINTERNAL (GLuint texture, GLenum internalformat, const GLbyte* mailbox);
+ GL_APICALL void         GL_APIENTRY glBeginSharedImageAccessDirectCHROMIUM (GLuint texture, GLenumSharedImageAccessMode mode);
+ GL_APICALL void         GL_APIENTRY glEndSharedImageAccessDirectCHROMIUM (GLuint texture);
++
++// Extension CHROMIUM_set_backbuffer
++GL_APICALL void         GL_APIENTRY glFramebufferBackbuffer (GLuint framebuffer);
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder.cc b/gpu/command_buffer/service/gles2_cmd_decoder.cc
+index 8de442a6b011bc06ac92d155b4abfcccf6013ac8..0487a5b92e6d5b93f46211a7baf4f1badbe98333 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder.cc
+@@ -1187,6 +1187,8 @@ class GLES2DecoderImpl : public GLES2Decoder,
+   void DoBeginSharedImageAccessDirectCHROMIUM(GLuint client_id, GLenum mode);
+   void DoEndSharedImageAccessDirectCHROMIUM(GLuint client_id);
+ 
++  void DoFramebufferBackbuffer(GLuint client_id);
++
+   void BindImage(uint32_t client_texture_id,
+                  uint32_t texture_target,
+                  gl::GLImage* image,
+@@ -2587,6 +2589,10 @@ class GLES2DecoderImpl : public GLES2Decoder,
+   // The size of fiixed attrib buffer.
+   GLsizei fixed_attrib_buffer_size_;
+ 
++  // The buffer used to simulate GL_FIXED attribs.
++  GLuint backbuffer_framebuffer_service_id_;
++  GLuint backbuffer_framebuffer_client_id_;
++
+   // The offscreen frame buffer that the client renders to. With EGL, the
+   // depth and stencil buffers are separate. With regular GL there is a single
+   // packed depth stencil buffer in offscreen_target_depth_render_buffer_.
+@@ -3458,6 +3464,8 @@ GLES2DecoderImpl::GLES2DecoderImpl(
+       attrib_0_size_(0),
+       fixed_attrib_buffer_id_(0),
+       fixed_attrib_buffer_size_(0),
++      backbuffer_framebuffer_service_id_(0),
++      backbuffer_framebuffer_client_id_(0),
+       offscreen_target_color_format_(0),
+       offscreen_target_depth_format_(0),
+       offscreen_target_stencil_format_(0),
+@@ -6306,9 +6314,16 @@ void GLES2DecoderImpl::ApplyDirtyState() {
+ }
+ 
+ GLuint GLES2DecoderImpl::GetBackbufferServiceId() const {
+-  return (offscreen_target_frame_buffer_.get())
+-             ? offscreen_target_frame_buffer_->id()
+-             : (surface_.get() ? surface_->GetBackingFramebufferObject() : 0);
++  if (offscreen_target_frame_buffer_.get())
++    return offscreen_target_frame_buffer_->id();
++
++  if (backbuffer_framebuffer_service_id_)
++    return backbuffer_framebuffer_service_id_;
++
++  if (surface_.get())
++    return surface_->GetBackingFramebufferObject();
++
++  return 0;
+ }
+ 
+ void GLES2DecoderImpl::RestoreState(const ContextState* prev_state) {
+@@ -6475,6 +6490,11 @@ void GLES2DecoderImpl::OnUseFramebuffer() const {
+ void GLES2DecoderImpl::DoBindFramebuffer(GLenum target, GLuint client_id) {
+   Framebuffer* framebuffer = nullptr;
+   GLuint service_id = 0;
++
++  if (client_id == 0 && backbuffer_framebuffer_client_id_) {
++    client_id = backbuffer_framebuffer_client_id_;
++  }
++
+   if (client_id != 0) {
+     framebuffer = GetFramebuffer(client_id);
+     if (!framebuffer) {
+@@ -6496,6 +6516,11 @@ void GLES2DecoderImpl::DoBindFramebuffer(GLenum target, GLuint client_id) {
+   }
+   LogClientServiceForInfo(framebuffer, client_id, "glBindFramebuffer");
+ 
++  Framebuffer* bound_framebuffer =
++      framebuffer_state_.bound_draw_framebuffer.get();
++  if (bound_framebuffer && bound_framebuffer->service_id() == service_id)
++    return;
++
+   if (target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER_EXT) {
+     framebuffer_state_.bound_draw_framebuffer = framebuffer;
+     state_.UpdateWindowRectanglesForBoundDrawFramebufferClientID(client_id);
+@@ -7469,6 +7494,9 @@ bool GLES2DecoderImpl::GetHelper(
+         *params = GetClientId(
+             framebuffer_manager(),
+             GetFramebufferInfoForTarget(GL_FRAMEBUFFER));
++        if (*params == (GLint)backbuffer_framebuffer_client_id_) {
++          *params = 0;
++        }
+       }
+       return true;
+     case GL_READ_FRAMEBUFFER_BINDING_EXT:
+@@ -7477,6 +7505,9 @@ bool GLES2DecoderImpl::GetHelper(
+         *params = GetClientId(
+             framebuffer_manager(),
+             GetFramebufferInfoForTarget(GL_READ_FRAMEBUFFER_EXT));
++        if (*params == (GLint)backbuffer_framebuffer_client_id_) {
++          *params = 0;
++        }
+       }
+       return true;
+     case GL_RENDERBUFFER_BINDING:
+@@ -18963,6 +18994,22 @@ void GLES2DecoderImpl::DoEndSharedImageAccessDirectCHROMIUM(GLuint client_id) {
+   texture_ref->EndAccessSharedImage();
+ }
+ 
++void GLES2DecoderImpl::DoFramebufferBackbuffer(GLuint client_id) {
++  if (client_id != 0) {
++    Framebuffer* framebuffer = GetFramebuffer(client_id);
++
++    if (!framebuffer || framebuffer->IsDeleted()) {
++      LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "DoFramebufferBackbuffer",
++                         "invalid frambuffer id");
++      return;
++    }
++
++    backbuffer_framebuffer_client_id_ = client_id;
++  } else {
++    backbuffer_framebuffer_client_id_ = 0;
++  }
++}
++
+ void GLES2DecoderImpl::DoInsertEventMarkerEXT(
+     GLsizei length, const GLchar* marker) {
+   if (!marker) {
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h b/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h
+index 7cccbf52378a151bd612f2e3993ce1c52d5f7ca0..ee3e4432d18e3aec2cf8365dab6f0cb7606cee21 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_autogen.h
+@@ -5702,6 +5702,17 @@ error::Error GLES2DecoderImpl::HandleEndSharedImageAccessDirectCHROMIUM(
+   return error::kNoError;
+ }
+ 
++error::Error GLES2DecoderImpl::HandleFramebufferBackbuffer(
++    uint32_t immediate_data_size,
++    const volatile void* cmd_data) {
++  const volatile gles2::cmds::FramebufferBackbuffer& c =
++      *static_cast<const volatile gles2::cmds::FramebufferBackbuffer*>(
++          cmd_data);
++  GLuint framebuffer = static_cast<GLuint>(c.framebuffer);
++  DoFramebufferBackbuffer(framebuffer);
++  return error::kNoError;
++}
++
+ bool GLES2DecoderImpl::SetCapabilityState(GLenum cap, bool enabled) {
+   switch (cap) {
+     case GL_BLEND:
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h
+index 2f790cbf1fd1baa64295d32976a9af8c699b14f6..fd0893bed5e76666174167c404fb4a20a849d29f 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h
+@@ -1141,4 +1141,5 @@ error::Error DoCreateAndTexStorage2DSharedImageINTERNAL(
+ error::Error DoBeginSharedImageAccessDirectCHROMIUM(GLuint client_id,
+                                                     GLenum mode);
+ error::Error DoEndSharedImageAccessDirectCHROMIUM(GLuint client_id);
++error::Error DoFramebufferBackbuffer(GLuint client_id);
+ #endif  // GPU_COMMAND_BUFFER_SERVICE_GLES2_CMD_DECODER_PASSTHROUGH_DOER_PROTOTYPES_H_
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
+index c6891934ba9bc755479681f054960ee692861ae5..8b2ae64140e899b1cc3ccc823571af8c825241f4 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doers.cc
+@@ -5668,5 +5668,11 @@ error::Error GLES2DecoderPassthroughImpl::DoEndSharedImageAccessDirectCHROMIUM(
+   return error::kNoError;
+ }
+ 
++error::Error GLES2DecoderPassthroughImpl::DoFramebufferBackbuffer(
++    GLuint client_id) {
++  NOTIMPLEMENTED();
++  return error::kNoError;
++}
++
+ }  // namespace gles2
+ }  // namespace gpu
+diff --git a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc
+index caac9cfa69f20515baf7d52ad23295c86bc2bfb3..e16691b7b1498d1d052737f3817dc0f6bae4625e 100644
+--- a/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc
++++ b/gpu/command_buffer/service/gles2_cmd_decoder_passthrough_handlers_autogen.cc
+@@ -4957,5 +4957,19 @@ GLES2DecoderPassthroughImpl::HandleEndSharedImageAccessDirectCHROMIUM(
+   return error::kNoError;
+ }
+ 
++error::Error GLES2DecoderPassthroughImpl::HandleFramebufferBackbuffer(
++    uint32_t immediate_data_size,
++    const volatile void* cmd_data) {
++  const volatile gles2::cmds::FramebufferBackbuffer& c =
++      *static_cast<const volatile gles2::cmds::FramebufferBackbuffer*>(
++          cmd_data);
++  GLuint framebuffer = static_cast<GLuint>(c.framebuffer);
++  error::Error error = DoFramebufferBackbuffer(framebuffer);
++  if (error != error::kNoError) {
++    return error;
++  }
++  return error::kNoError;
++}
++
+ }  // namespace gles2
+ }  // namespace gpu
+diff --git a/ppapi/api/ppb_opengles2.idl b/ppapi/api/ppb_opengles2.idl
+index 5f08099286005882782cb7ab56be0f2e3f156dd1..b5cf1ea2b530834b830146d688dab2cdc1a56272 100644
+--- a/ppapi/api/ppb_opengles2.idl
++++ b/ppapi/api/ppb_opengles2.idl
+@@ -619,6 +619,8 @@ interface PPB_OpenGLES2 {
+                 [in] GLint y,
+                 [in] GLsizei width,
+                 [in] GLsizei height);
++  void FramebufferBackbuffer([in] PP_Resource context,
++                             [in] GLuint framebuffer);
+ };
+ 
+ 
+diff --git a/ppapi/c/ppb_opengles2.h b/ppapi/c/ppb_opengles2.h
+index 884737772591f61ac636eab0e07e7f6058830819..f949f7494579af2279a20928441b3f49d8d990ee 100644
+--- a/ppapi/c/ppb_opengles2.h
++++ b/ppapi/c/ppb_opengles2.h
+@@ -1004,6 +1004,8 @@ struct PPB_OpenGLES2 {
+                    GLint y,
+                    GLsizei width,
+                    GLsizei height);
++  void (*FramebufferBackbuffer)(PP_Resource context,
++                                GLuint client_id);
+ };
+ 
+ struct PPB_OpenGLES2InstancedArrays_1_0 {
+@@ -1192,4 +1194,3 @@ struct PPB_OpenGLES2VertexArrayObject {
+  */
+ 
+ #endif  /* PPAPI_C_PPB_OPENGLES2_H_ */
+-
+diff --git a/ppapi/lib/gl/gles2/gles2.c b/ppapi/lib/gl/gles2/gles2.c
+index 187d1a2478d227c9f7149eb3863e563b06a20788..c57460e20f55403f0261aecbd69e2b61b91b8d2a 100644
+--- a/ppapi/lib/gl/gles2/gles2.c
++++ b/ppapi/lib/gl/gles2/gles2.c
+@@ -1046,3 +1046,8 @@ void GL_APIENTRY glDrawBuffersEXT(GLsizei count, const GLenum* bufs) {
+   if (ext)
+     ext->DrawBuffersEXT(glGetCurrentContextPPAPI(), count, bufs);
+ }
++
++void GL_APIENTRY glFramebufferBackbuffer(GLuint framebuffer) {
++  glGetInterfacePPAPI()->FramebufferBackbuffer(glGetCurrentContextPPAPI(),
++                                               framebuffer);
++}
+diff --git a/ppapi/shared_impl/ppb_opengles2_shared.cc b/ppapi/shared_impl/ppb_opengles2_shared.cc
+index 020b45c4e25a45bdb1063ba5ac6509608ae1daad..61412d386d341899b3069cc4461c46b3497b84c2 100644
+--- a/ppapi/shared_impl/ppb_opengles2_shared.cc
++++ b/ppapi/shared_impl/ppb_opengles2_shared.cc
+@@ -1592,6 +1592,13 @@ void DrawBuffersEXT(PP_Resource context_id, GLsizei count, const GLenum* bufs) {
+   }
+ }
+ 
++void FramebufferBackbuffer(PP_Resource context_id, GLuint framebuffer) {
++  Enter3D enter(context_id, true);
++  if (enter.succeeded()) {
++    ToGles2Impl(&enter)->FramebufferBackbuffer(framebuffer);
++  }
++}
++
+ }  // namespace
+ const PPB_OpenGLES2* PPB_OpenGLES2_Shared::GetInterface() {
+   static const struct PPB_OpenGLES2 ppb_opengles2 = {
+@@ -1736,7 +1743,8 @@ const PPB_OpenGLES2* PPB_OpenGLES2_Shared::GetInterface() {
+       &VertexAttrib4f,
+       &VertexAttrib4fv,
+       &VertexAttribPointer,
+-      &Viewport};
++      &Viewport,
++      &FramebufferBackbuffer};
+   return &ppb_opengles2;
+ }
+ const PPB_OpenGLES2InstancedArrays*
+diff --git a/services/viz/privileged/mojom/compositing/BUILD.gn b/services/viz/privileged/mojom/compositing/BUILD.gn
+index 75e2ff88e837b18e41857854587797bb2a67095a..dd7dcb790bd34fb3dfa9650c9bec600258b8641d 100644
+--- a/services/viz/privileged/mojom/compositing/BUILD.gn
++++ b/services/viz/privileged/mojom/compositing/BUILD.gn
+@@ -18,6 +18,7 @@ mojom("compositing") {
+   ]
+ 
+   public_deps = [
++    "//components/viz/common:single_release_callback",
+     "//gpu/ipc/common:interfaces",
+     "//media/capture/mojom:video_capture",
+     "//media/mojo/mojom",
+diff --git a/services/viz/privileged/mojom/compositing/display_private.mojom b/services/viz/privileged/mojom/compositing/display_private.mojom
+index 061218ba5e863adb4d62b1ed802f841edec47774..1a85a721717ebf16968cf04783a3cb9c78441a3b 100644
+--- a/services/viz/privileged/mojom/compositing/display_private.mojom
++++ b/services/viz/privileged/mojom/compositing/display_private.mojom
+@@ -4,7 +4,10 @@
+ 
+ module viz.mojom;
+ 
++import "components/viz/common/resources/single_release_callback.mojom";
+ import "gpu/ipc/common/context_result.mojom";
++import "gpu/ipc/common/mailbox.mojom";
++import "gpu/ipc/common/sync_token.mojom";
+ import "mojo/public/mojom/base/time.mojom";
+ import "ui/gfx/mojom/ca_layer_params.mojom";
+ import "ui/gfx/mojom/color_space.mojom";
+@@ -15,13 +18,6 @@ import "ui/latency/mojom/latency_info.mojom";
+ import "services/viz/privileged/mojom/compositing/layered_window_updater.mojom";
+ import "services/viz/privileged/mojom/compositing/vsync_parameter_observer.mojom";
+ 
+-import "gpu/ipc/common/mailbox.mojom";
+-import "gpu/ipc/common/sync_token.mojom";
+-
+-interface SingleReleaseCallback {
+-  Run(gpu.mojom.SyncToken sync_token, bool is_lost);
+-};
+-
+ // See ui/compositor/compositor.h: ContextFactoryPrivate.
+ // The DisplayPrivate is used by privileged clients to talk to Display.
+ // DisplayPrivate would eventually replace or be used by ContextFactoryPrivate.
+diff --git a/ui/gl/gl_surface.cc b/ui/gl/gl_surface.cc
+index 2e8417d863f89be94183b72d5f576955445c480d..c38d354913a2794f56444198472c366904ed5929 100644
+--- a/ui/gl/gl_surface.cc
++++ b/ui/gl/gl_surface.cc
+@@ -184,6 +184,10 @@ bool GLSurface::IsSurfaceless() const {
+   return false;
+ }
+ 
++bool GLSurface::IsBackedByFBO() const {
++  return false;
++}
++
+ bool GLSurface::FlipsVertically() const {
+   return false;
+ }
+diff --git a/ui/gl/gl_surface.h b/ui/gl/gl_surface.h
+index f77ddc97cc23ab53bcd711e25aabff101157edce..c3f3c3641fb7f62c406fb79b2405319ac11d4233 100644
+--- a/ui/gl/gl_surface.h
++++ b/ui/gl/gl_surface.h
+@@ -265,6 +265,8 @@ class GL_EXPORT GLSurface : public base::RefCounted<GLSurface> {
+ 
+   virtual bool IsSurfaceless() const;
+ 
++  virtual bool IsBackedByFBO() const;
++
+   virtual bool FlipsVertically() const;
+ 
+   // Returns true if SwapBuffers or PostSubBuffers causes a flip, such that

@@ -415,7 +415,7 @@ source_set("electron_lib") {
     "//base",
     "//base:i18n",
     "//content/public/app:both",
-    "//electron/native_api",
+    "//electron/native_api:offscreen_headers",
   ]
 
   include_dirs = [
@@ -821,6 +821,7 @@ if (is_mac) {
     public_deps = [
       ":electron_framework_libraries",
       ":electron_lib",
+      "//electron/native_api",
     ]
     deps = [
       ":electron_angle_library",
@@ -1116,6 +1117,7 @@ if (is_mac) {
       ":packed_resources",
       "//content:sandbox_helper_win",
       "//electron/buildflags",
+      "//electron/native_api",
       "//ui/strings",
     ]
 

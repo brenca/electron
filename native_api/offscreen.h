@@ -40,6 +40,14 @@ struct SyncToken {
 struct Mailbox {
   int8_t name[16];
   bool shared_image;
+
+  bool operator<(const Mailbox& other) const {
+    return memcmp(this, &other, sizeof other) < 0;
+  }
+  bool operator==(const Mailbox& other) const {
+    return memcmp(this, &other, sizeof other) == 0;
+  }
+  bool operator!=(const Mailbox& other) const { return !operator==(other); }
 };
 
 }  // namespace gpu

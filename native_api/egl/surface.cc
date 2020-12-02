@@ -18,7 +18,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE: {
       RECT rc;
       GetClientRect(hwnd, &rc);
-      surface->setSize(gfx::Rect(rc).size());
+      surface->set_bounds(gfx::Rect(rc));
       break;
     }
   }
@@ -34,23 +34,42 @@ namespace egl {
 Surface::Surface(const Config* config, gfx::Size size)
     : is_current_in_some_thread_(false),
       config_(config),
-      size_(size),
+      bounds_(gfx::Rect(size)),
       is_offscreen_(true) {}
 
+#if !defined(OS_MACOSX)
 Surface::Surface(const Config* config, EGLNativeWindowType win)
     : is_current_in_some_thread_(false),
       config_(config),
       win_(win),
       is_offscreen_(false) {
+#if defined(OS_WIN)
   SetWindowLongPtr(win_, GWLP_USERDATA, (LONG_PTR)this);
   old_wnd_proc_ =
       (WNDPROC)SetWindowLongPtr(win_, GWLP_WNDPROC, (LONG_PTR)WndProc);
   RECT rc;
   GetClientRect(win_, &rc);
-  size_ = gfx::Rect(rc).size();
+  bounds_ = gfx::Rect(rc);
+#else
+  NOTREACHED();
+#endif
 }
 
-Surface::~Surface() = default;
+gpu::SurfaceHandle Surface::window() const {
+#if defined(OS_WIN)
+  return win_;
+#else
+  NOTREACHED();
+  return gpu::SurfaceHandle();
+#endif
+}
+
+void Surface::Destroy() {}
+#endif  // !defined(OS_MACOSX)
+
+Surface::~Surface() {
+  Destroy();
+}
 
 const Config* Surface::config() const {
   return config_;
@@ -60,16 +79,22 @@ bool Surface::is_offscreen() const {
   return is_offscreen_;
 }
 
-EGLNativeWindowType Surface::window() const {
-  return win_;
+#if !defined(OS_MACOSX)
+const gfx::Size Surface::size() {
+  return bounds_.size();
 }
 
-const gfx::Size Surface::size() const {
-  return size_;
+const gfx::Rect Surface::bounds() {
+  return bounds_;
 }
 
-void Surface::setSize(gfx::Size size) {
-  size_ = size;
+float Surface::scale_factor() {
+  return 1.f;
+}
+#endif  // !defined(OS_MACOSX)
+
+void Surface::set_bounds(gfx::Rect bounds) {
+  bounds_ = bounds;
   size_dirty_ = true;
 }
 

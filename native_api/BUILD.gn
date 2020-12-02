@@ -2,11 +2,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("offscreen") {
+source_set("offscreen_headers") {
   sources = [
     "electron.h",
-    "offscreen.cc",
     "offscreen.h",
+  ]
+}
+
+source_set("offscreen") {
+  sources = [
+    "offscreen.cc",
   ]
 
   include_dirs = [
@@ -16,7 +21,9 @@ source_set("offscreen") {
   ]
 
   deps = [
+    ":offscreen_headers",
     "//base",
+    "//electron:electron_lib",
   ]
 }
 
@@ -28,11 +35,17 @@ source_set("gles2_c_lib") {
     "//gpu/command_buffer/client/gles2_lib.cc",
     "//gpu/command_buffer/client/gles2_lib.h",
   ]
+
   defines = [
     "GLES2_C_LIB_IMPLEMENTATION",
     "GLES2_CONFORMANCE_TESTS=1",
-    "GL_APICALL=__declspec(dllexport)",
   ]
+
+  if (current_os == "win") {
+    defines += [ "GL_APICALL=__declspec(dllexport)" ]
+  } else {
+    defines += [ "GL_APICALL=__attribute__((visibility(\"default\")))" ]
+  }
 
   deps = [
     "//base",
