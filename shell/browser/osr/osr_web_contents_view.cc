@@ -154,7 +154,11 @@ void OffScreenWebContentsView::RenderViewReady() {}
 
 void OffScreenWebContentsView::RenderViewHostChanged(
     content::RenderViewHost* old_host,
-    content::RenderViewHost* new_host) {}
+    content::RenderViewHost* new_host) {
+  // Notify new RenderWidgetHostView of the size of the window, since it could
+  // have changed since initialization
+  OnWindowResize();
+}
 
 void OffScreenWebContentsView::SetOverscrollControllerEnabled(bool enabled) {}
 
