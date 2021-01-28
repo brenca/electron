@@ -278,9 +278,9 @@ def export_patches(repo, out_dir, patch_range=None):
     if p.endswith('.patch'):
       os.remove(os.path.join(out_dir, p))
 
-  with open(os.path.join(out_dir, '.patches'), 'w') as pl:
+  with open(os.path.join(out_dir, '.patches'), 'wb') as pl:
     for patch in patches:
       filename = get_file_name(patch)
-      with open(os.path.join(out_dir, filename), 'w') as f:
+      with open(os.path.join(out_dir, filename), 'wb') as f:
         f.write('\n'.join(remove_patch_filename(patch)).rstrip('\n') + '\n')
       pl.write(filename + '\n')
