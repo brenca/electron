@@ -114,6 +114,10 @@ void WebContentsView::BuildPrototype(
       .SetProperty("webContents", &WebContentsView::GetWebContents);
 }
 
+int32_t WebContentsView::ID() const {
+  return api_web_contents_->ID();
+}
+
 }  // namespace api
 
 }  // namespace electron

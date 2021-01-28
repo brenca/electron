@@ -5,8 +5,7 @@
 #ifndef SHELL_BROWSER_OSR_OSR_WEB_CONTENTS_VIEW_H_
 #define SHELL_BROWSER_OSR_OSR_WEB_CONTENTS_VIEW_H_
 
-#include "shell/browser/native_window.h"
-#include "shell/browser/native_window_observer.h"
+#include "shell/browser/api/electron_api_offscreen_window.h"
 
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"  // nogncheck
 #include "content/browser/web_contents/web_contents_view.h"  // nogncheck
@@ -23,21 +22,24 @@ class OffScreenView;
 
 namespace electron {
 
-class OffScreenWebContentsView : public content::WebContentsView,
-                                 public content::RenderViewHostDelegateView,
-                                 public NativeWindowObserver {
+class OffScreenWebContentsView
+    : public content::WebContentsView,
+      public content::RenderViewHostDelegateView,
+      public OffScreenRenderWidgetHostView::Initializer,
+      public api::OffscreenWindow::Observer {
  public:
-  OffScreenWebContentsView(bool transparent, const OnPaintCallback& callback);
+  OffScreenWebContentsView(bool transparent,
+                           float scale_factor,
+                           const OnPaintCallback& callback,
+                           const OnTexturePaintCallback& texture_callback);
   ~OffScreenWebContentsView() override;
 
   void SetWebContents(content::WebContents*);
-  void SetNativeWindow(NativeWindow* window);
+  void SetOffscreenWindow(api::OffscreenWindow* window);
 
-  // NativeWindowObserver:
+  // api::OffscreenWindow::Observer:
   void OnWindowResize() override;
   void OnWindowClosed() override;
-
-  gfx::Size GetSize();
 
   // content::WebContentsView:
   gfx::NativeView GetNativeView() const override;
@@ -75,10 +77,18 @@ class OffScreenWebContentsView : public content::WebContentsView,
                      content::RenderWidgetHostImpl* source_rwh) override;
   void UpdateDragCursor(blink::WebDragOperation operation) override;
 
+  // OffScreenRenderWidgetHostView::Initializer
+  bool IsTransparent() const override;
+  const OnPaintCallback& GetPaintCallback() const override;
+  const OnTexturePaintCallback& GetTexturePaintCallback() const override;
+  gfx::Size GetInitialSize() const override;
+
   void SetPainting(bool painting);
   bool IsPainting() const;
   void SetFrameRate(int frame_rate);
   int GetFrameRate() const;
+  void SetScaleFactor(float scale_factor);
+  float GetScaleFactor() const;
 
  private:
 #if defined(OS_MACOSX)
@@ -88,12 +98,14 @@ class OffScreenWebContentsView : public content::WebContentsView,
 
   OffScreenRenderWidgetHostView* GetView() const;
 
-  NativeWindow* native_window_;
+  api::OffscreenWindow* offscreen_window_;
 
   const bool transparent_;
+  float scale_factor_;
   bool painting_ = true;
   int frame_rate_ = 60;
   OnPaintCallback callback_;
+  OnTexturePaintCallback texture_callback_;
 
   // Weak refs.
   content::WebContents* web_contents_ = nullptr;

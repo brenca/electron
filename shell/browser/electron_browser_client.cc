@@ -547,8 +547,8 @@ void ElectronBrowserClient::RenderProcessWillLaunch(
 #endif
 
   ProcessPreferences prefs;
-  auto* web_preferences =
-      WebContentsPreferences::From(GetWebContentsFromProcessID(process_id));
+  content::WebContents* web_contents = GetWebContentsFromProcessID(process_id);
+  auto* web_preferences = WebContentsPreferences::From(web_contents);
   if (web_preferences) {
     prefs.sandbox = web_preferences->IsEnabled(options::kSandbox);
     prefs.native_window_open =
@@ -560,6 +560,7 @@ void ElectronBrowserClient::RenderProcessWillLaunch(
   }
 
   AddProcessPreferences(host->GetID(), prefs);
+
   // ensure the ProcessPreferences is removed later
   host->AddObserver(this);
 }

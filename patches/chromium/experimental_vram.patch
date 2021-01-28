@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Heilig Benedek <benecene@gmail.com>
+Date: Wed, 20 Jan 2021 11:44:03 +0100
+Subject: Experiment to reduce peak VRAM usage
+
+This patch adjusts some internal settings to hopefully reduce the peak
+VRAM usage of webcontents.
+
+diff --git a/cc/tiles/tile_manager.cc b/cc/tiles/tile_manager.cc
+index 88dac92a4b7bd0fba6d00380c398fc556c24fbda..49a7038ee0e4202793060b19f61c8611f6211744 100644
+--- a/cc/tiles/tile_manager.cc
++++ b/cc/tiles/tile_manager.cc
+@@ -675,10 +675,9 @@ bool TileManager::TilePriorityViolatesMemoryPolicy(
+     case ALLOW_ABSOLUTE_MINIMUM:
+       return priority.priority_bin > TilePriority::NOW;
+     case ALLOW_PREPAINT_ONLY:
+-      return priority.priority_bin > TilePriority::SOON;
++      return priority.priority_bin > TilePriority::NOW;
+     case ALLOW_ANYTHING:
+-      return priority.distance_to_visible ==
+-             std::numeric_limits<float>::infinity();
++      return priority.priority_bin > TilePriority::NOW;
+   }
+   NOTREACHED();
+   return true;
+diff --git a/cc/trees/layer_tree_host_impl.cc b/cc/trees/layer_tree_host_impl.cc
+index e5afad68300bdd6ac109b3c9b94d3c200d164456..27fa488e7cfbbc4a0fa4629fdbf3936eb411823b 100644
+--- a/cc/trees/layer_tree_host_impl.cc
++++ b/cc/trees/layer_tree_host_impl.cc
+@@ -3234,11 +3234,11 @@ void LayerTreeHostImpl::SetVisible(bool visible) {
+   else
+     total_frame_counter_.OnHide(base::TimeTicks::Now());
+   DidVisibilityChange(this, visible_);
+-  UpdateTileManagerMemoryPolicy(ActualManagedMemoryPolicy());
+ 
+   // If we just became visible, we have to ensure that we draw high res tiles,
+   // to prevent checkerboard/low res flashes.
+   if (visible_) {
++    UpdateTileManagerMemoryPolicy(ActualManagedMemoryPolicy());
+     // TODO(crbug.com/469175): Replace with RequiresHighResToDraw.
+     SetRequiresHighResToDraw();
+     // Prior CompositorFrame may have been discarded and thus we need to ensure
+@@ -3253,10 +3253,35 @@ void LayerTreeHostImpl::SetVisible(bool visible) {
+       SetNeedsRedraw();
+     }
+   } else {
++    UpdateTileManagerMemoryPolicy(ManagedMemoryPolicy(0));
++    ReleaseTileResources();
++    active_tree_->OnPurgeMemory();
++    if (pending_tree_)
++      pending_tree_->OnPurgeMemory();
++    if (recycle_tree_)
++      recycle_tree_->OnPurgeMemory();
++
+     EvictAllUIResources();
+-    // Call PrepareTiles to evict tiles when we become invisible.
+-    PrepareTiles();
++    if (image_decode_cache_) {
++      image_decode_cache_->SetShouldAggressivelyFreeResources(true);
++      image_decode_cache_->SetShouldAggressivelyFreeResources(false);
++    }
++    if (resource_pool_)
++      resource_pool_->OnMemoryPressure(base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL);
+     tile_manager_.decoded_image_tracker().UnlockAllImages();
++
++    // If we're not visible, we likely released resources, so we want to
++    // aggressively flush here to make sure those DeleteTextures make it to the
++    // GPU process to free up the memory.
++    if (!visible_ && layer_tree_frame_sink_->context_provider()) {
++      auto* gl = layer_tree_frame_sink_->context_provider()->ContextGL();
++      gl->ShallowFlushCHROMIUM();
++    }
++
++    // EvictAllUIResources();
++    // // Call PrepareTiles to evict tiles when we become invisible.
++    // PrepareTiles();
++    // tile_manager_.decoded_image_tracker().UnlockAllImages();
+   }
+ }
+ 
+@@ -3282,7 +3307,7 @@ ManagedMemoryPolicy LayerTreeHostImpl::ActualManagedMemoryPolicy() const {
+         gpu::MemoryAllocation::CUTOFF_ALLOW_REQUIRED_ONLY;
+   } else if (use_gpu_rasterization()) {
+     actual.priority_cutoff_when_visible =
+-        gpu::MemoryAllocation::CUTOFF_ALLOW_NICE_TO_HAVE;
++        gpu::MemoryAllocation::CUTOFF_ALLOW_REQUIRED_ONLY;
+   }
+   return actual;
+ }
+diff --git a/cc/trees/layer_tree_settings.cc b/cc/trees/layer_tree_settings.cc
+index 2a13e65442174c8b02b324bd1090459cb9df365c..014a829229ef7f0510056d805aa0e6a08ac9f79e 100644
+--- a/cc/trees/layer_tree_settings.cc
++++ b/cc/trees/layer_tree_settings.cc
+@@ -10,11 +10,11 @@
+ namespace cc {
+ 
+ LayerTreeSettings::LayerTreeSettings()
+-    : default_tile_size(gfx::Size(256, 256)),
+-      max_untiled_layer_size(gfx::Size(512, 512)),
++    : default_tile_size(gfx::Size(128, 128)),
++      max_untiled_layer_size(gfx::Size(1024, 1024)),
+       minimum_occlusion_tracking_size(gfx::Size(160, 160)),
+-      memory_policy(64 * 1024 * 1024,
+-                    gpu::MemoryAllocation::CUTOFF_ALLOW_EVERYTHING,
++      memory_policy(16 * 1024 * 1024,
++                    gpu::MemoryAllocation::CUTOFF_ALLOW_REQUIRED_ONLY,
+                     ManagedMemoryPolicy::kDefaultNumResourcesLimit) {}
+ 
+ LayerTreeSettings::LayerTreeSettings(const LayerTreeSettings& other) = default;
+diff --git a/cc/trees/layer_tree_settings.h b/cc/trees/layer_tree_settings.h
+index 2a2de85e89a8a0f803b7c987620a259b26281d8d..5521ec443db407add7189a3286413ca9621dd1b9 100644
+--- a/cc/trees/layer_tree_settings.h
++++ b/cc/trees/layer_tree_settings.h
+@@ -45,7 +45,7 @@ class CC_EXPORT LayerTreeSettings {
+   bool can_use_lcd_text = true;
+   bool gpu_rasterization_disabled = false;
+   int gpu_rasterization_msaa_sample_count = -1;
+-  float gpu_rasterization_skewport_target_time_in_seconds = 0.2f;
++  float gpu_rasterization_skewport_target_time_in_seconds = 0.005f;
+   bool create_low_res_tiling = false;
+   bool use_stream_video_draw_quad = false;
+ 
+@@ -82,20 +82,20 @@ class CC_EXPORT LayerTreeSettings {
+   // Note this value is specified with an ideal contents scale in mind. That
+   // is, the ideal tiling would use this value as the padding.
+   // TODO(vmpstr): Figure out a better number that doesn't depend on scale.
+-  int tiling_interest_area_padding = 3000;
++  int tiling_interest_area_padding = 64;
+   float skewport_target_time_in_seconds = 1.0f;
+-  int skewport_extrapolation_limit_in_screen_pixels = 2000;
+-  size_t max_memory_for_prepaint_percentage = 100;
++  int skewport_extrapolation_limit_in_screen_pixels = 64;
++  size_t max_memory_for_prepaint_percentage = 20;
+   bool use_zero_copy = false;
+   bool use_partial_raster = false;
+   bool enable_elastic_overscroll = false;
+-  size_t scheduled_raster_task_limit = 32;
++  size_t scheduled_raster_task_limit = 64;
+   bool use_occlusion_for_tile_prioritization = false;
+   bool use_layer_lists = false;
+-  int max_staging_buffer_usage_in_bytes = 32 * 1024 * 1024;
++  int max_staging_buffer_usage_in_bytes = 8 * 1024 * 1024;
+   ManagedMemoryPolicy memory_policy;
+-  size_t decoded_image_working_set_budget_bytes = 128 * 1024 * 1024;
+-  int max_preraster_distance_in_screen_pixels = 1000;
++  size_t decoded_image_working_set_budget_bytes = 32 * 1024 * 1024;
++  int max_preraster_distance_in_screen_pixels = 500;
+   bool use_rgba_4444 = false;
+   bool unpremultiply_and_dither_low_bit_depth_tiles = false;
+ 
+diff --git a/cc/trees/managed_memory_policy.cc b/cc/trees/managed_memory_policy.cc
+index a8b7d9c5d3e5b0e260c11266efc5c570304088a4..5f1481b0bc79dd3e2fe87e48acf691b3fc1f5a32 100644
+--- a/cc/trees/managed_memory_policy.cc
++++ b/cc/trees/managed_memory_policy.cc
+@@ -10,7 +10,7 @@
+ 
+ namespace cc {
+ 
+-const size_t ManagedMemoryPolicy::kDefaultNumResourcesLimit = 10 * 1000 * 1000;
++const size_t ManagedMemoryPolicy::kDefaultNumResourcesLimit = 250 * 1000;
+ 
+ using gpu::MemoryAllocation;
+ 
+diff --git a/content/public/common/gpu_stream_constants.h b/content/public/common/gpu_stream_constants.h
+index 7169ea14f8f47c14895d5f2ce24ce436b18efe14..5ce6c21ee3ad57e19acc612069fae99207a6fa32 100644
+--- a/content/public/common/gpu_stream_constants.h
++++ b/content/public/common/gpu_stream_constants.h
+@@ -22,7 +22,7 @@ const gpu::SchedulingPriority kGpuStreamPriorityDefault =
+ 
+ // Used for UI context and all other browser contexts in the same stream.
+ const gpu::SchedulingPriority kGpuStreamPriorityUI =
+-    gpu::SchedulingPriority::kHigh;
++    gpu::SchedulingPriority::kNormal;
+ 
+ // Used for renderer video media context.
+ const gpu::SchedulingPriority kGpuStreamPriorityMedia =
+@@ -30,7 +30,7 @@ const gpu::SchedulingPriority kGpuStreamPriorityMedia =
+ 
+ // Used for renderer raster worker context.
+ const gpu::SchedulingPriority kGpuStreamPriorityWorker =
+-    gpu::SchedulingPriority::kLow;
++    gpu::SchedulingPriority::kNormal;
+ 
+ }  // namespace content
+ 
+diff --git a/third_party/blink/renderer/platform/widget/compositing/layer_tree_settings.cc b/third_party/blink/renderer/platform/widget/compositing/layer_tree_settings.cc
+index 6e1d3b3b1add4eda90560856b6915d46796d4b4b..b2306493075280b6c2bcdd2b295b2c59d73da547 100644
+--- a/third_party/blink/renderer/platform/widget/compositing/layer_tree_settings.cc
++++ b/third_party/blink/renderer/platform/widget/compositing/layer_tree_settings.cc
+@@ -128,13 +128,13 @@ cc::ManagedMemoryPolicy GetGpuMemoryPolicy(
+                  static_cast<size_t>(256 * 1024 * 1024));
+   }
+   actual.priority_cutoff_when_visible =
+-      gpu::MemoryAllocation::CUTOFF_ALLOW_EVERYTHING;
++      gpu::MemoryAllocation::CUTOFF_ALLOW_REQUIRED_ONLY;
+ #else
+   // Ignore what the system said and give all clients the same maximum
+   // allocation on desktop platforms.
+-  actual.bytes_limit_when_visible = 512 * 1024 * 1024;
++  actual.bytes_limit_when_visible = 128 * 1024 * 1024;
+   actual.priority_cutoff_when_visible =
+-      gpu::MemoryAllocation::CUTOFF_ALLOW_NICE_TO_HAVE;
++      gpu::MemoryAllocation::CUTOFF_ALLOW_REQUIRED_ONLY;
+ 
+   // For large monitors (4k), double the tile memory to avoid frequent out of
+   // memory problems. 4k could mean a screen width of anywhere from 3840 to 4096
+@@ -218,7 +218,7 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
+     }
+   };
+ 
+-  int default_tile_size = 256;
++  int default_tile_size = 128;
+ #if defined(OS_ANDROID)
+   const gfx::Size screen_size =
+       gfx::ScaleToFlooredSize(initial_screen_size, initial_device_scale_factor);
+@@ -419,12 +419,12 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
+     // On low-end we want to be very careful about killing other
+     // apps. So initially we use 50% more memory to avoid flickering
+     // or raster-on-demand.
+-    settings.max_memory_for_prepaint_percentage = 67;
++    settings.max_memory_for_prepaint_percentage = 75;
+   } else {
+     // On other devices we have increased memory excessively to avoid
+     // raster-on-demand already, so now we reserve 50% _only_ to avoid
+     // raster-on-demand, and use 50% of the memory otherwise.
+-    settings.max_memory_for_prepaint_percentage = 50;
++    settings.max_memory_for_prepaint_percentage = 75;
+   }
+ 
+   // TODO(danakj): Only do this on low end devices.
+@@ -497,7 +497,7 @@ cc::LayerTreeSettings GenerateLayerTreeSettings(
+     settings.use_rgba_4444 = true;
+   }
+ 
+-  settings.max_staging_buffer_usage_in_bytes = 32 * 1024 * 1024;  // 32MB
++  settings.max_staging_buffer_usage_in_bytes = 8 * 1024 * 1024;  // 32MB
+   // Use 1/4th of staging buffers on low-end devices.
+   if (base::SysInfo::IsLowEndDevice())
+     settings.max_staging_buffer_usage_in_bytes /= 4;
+diff --git a/ui/compositor/compositor.cc b/ui/compositor/compositor.cc
+index 975f7729f9316e2dd4d14f6cb1257dc1b7652d00..8d5b1160c2e6fd3706b4c45c9d2c44cf049e9257 100644
+--- a/ui/compositor/compositor.cc
++++ b/ui/compositor/compositor.cc
+@@ -179,7 +179,7 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
+   settings.enable_elastic_overscroll = true;
+ #endif
+ 
+-  settings.memory_policy.bytes_limit_when_visible = 512 * 1024 * 1024;
++  settings.memory_policy.bytes_limit_when_visible = 128 * 1024 * 1024;
+ 
+   // Used to configure ui compositor memory limit for chromeos devices.
+   // See crbug.com/923141.
+@@ -195,7 +195,7 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
+   }
+ 
+   settings.memory_policy.priority_cutoff_when_visible =
+-      gpu::MemoryAllocation::CUTOFF_ALLOW_NICE_TO_HAVE;
++      gpu::MemoryAllocation::CUTOFF_ALLOW_REQUIRED_ONLY;
+ 
+   settings.disallow_non_exact_resource_reuse =
+       command_line->HasSwitch(switches::kDisallowNonExactResourceReuse);

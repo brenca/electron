@@ -129,6 +129,30 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
     OFF_SCREEN,       // Used for offscreen rendering
   };
 
+  class PaintObserver : public base::CheckedObserver {
+   public:
+    virtual void OnPaint(const gfx::Rect& dirty_rect,
+                         const SkBitmap& bitmap) = 0;
+    virtual void OnTexturePaint(const ::gpu::Mailbox& mailbox,
+                                const ::gpu::SyncToken& sync_token,
+                                const gfx::Rect& content_rect,
+                                bool is_popup,
+                                void (*callback)(void*, void*),
+                                void* context) = 0;
+
+   protected:
+    ~PaintObserver() override {}
+  };
+
+  void AddPaintObserver(PaintObserver* obs) {
+    paint_observers_.AddObserver(obs);
+  }
+  void RemovePaintObserver(PaintObserver* obs) {
+    // Trying to remove from an empty collection leads to an access violation
+    if (paint_observers_.might_have_observers())
+      paint_observers_.RemoveObserver(obs);
+  }
+
   // Create a new WebContents and return the V8 wrapper of it.
   static gin::Handle<WebContents> Create(v8::Isolate* isolate,
                                          const gin_helper::Dictionary& options);
@@ -313,11 +337,19 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   bool IsOffScreen() const;
 #if BUILDFLAG(ENABLE_OSR)
   void OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap);
+  void OnTexturePaint(const gpu::Mailbox& mailbox,
+                      const gpu::SyncToken& sync_token,
+                      const gfx::Rect& content_rect,
+                      bool is_popup,
+                      void (*callback)(void*, void*),
+                      void* context);
   void StartPainting();
   void StopPainting();
   bool IsPainting() const;
   void SetFrameRate(int frame_rate);
   int GetFrameRate() const;
+  void SetScaleFactor(float scale_factor);
+  float GetScaleFactor() const;
 #endif
   void Invalidate();
   gfx::Size GetSizeForNewRenderView(content::WebContents*) override;
@@ -657,6 +689,8 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   int currently_committed_process_id_ = -1;
 
   scoped_refptr<base::TaskRunner> print_task_runner_;
+  
+  base::ObserverList<PaintObserver> paint_observers_;
 
   service_manager::BinderRegistryWithArgs<content::RenderFrameHost*> registry_;
   mojo::ReceiverSet<mojom::ElectronBrowser, content::RenderFrameHost*>

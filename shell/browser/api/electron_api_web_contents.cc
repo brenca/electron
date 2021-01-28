@@ -45,6 +45,7 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer_type_converters.h"
+#include "content/public/common/webplugininfo.h"
 #include "electron/buildflags/buildflags.h"
 #include "electron/shell/common/api/api.mojom.h"
 #include "gin/data_object_builder.h"
@@ -110,6 +111,7 @@
 #include "ui/events/base_event_utils.h"
 
 #if BUILDFLAG(ENABLE_OSR)
+#include "shell/browser/api/electron_api_offscreen_window.h"
 #include "shell/browser/osr/osr_render_widget_host_view.h"
 #include "shell/browser/osr/osr_web_contents_view.h"
 #endif
@@ -551,8 +553,10 @@ WebContents::WebContents(v8::Isolate* isolate,
 #if BUILDFLAG(ENABLE_OSR)
     if (embedder_ && embedder_->IsOffScreen()) {
       auto* view = new OffScreenWebContentsView(
-          false,
-          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+          false, 0.0f,
+          base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)),
+          base::BindRepeating(&WebContents::OnTexturePaint,
+                              base::Unretained(this)));
       params.view = view;
       params.delegate_view = view;
 
@@ -565,12 +569,16 @@ WebContents::WebContents(v8::Isolate* isolate,
     }
   } else if (IsOffScreen()) {
     bool transparent = false;
+    float scaleFactor = 0.0f;
     options.Get("transparent", &transparent);
+    options.Get("scaleFactor", &scaleFactor);
 
     content::WebContents::CreateParams params(session->browser_context());
     auto* view = new OffScreenWebContentsView(
-        transparent,
-        base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)));
+        transparent, scaleFactor,
+        base::BindRepeating(&WebContents::OnPaint, base::Unretained(this)),
+        base::BindRepeating(&WebContents::OnTexturePaint,
+                            base::Unretained(this)));
     params.view = view;
     params.delegate_view = view;
 
@@ -593,6 +601,7 @@ void WebContents::InitZoomController(content::WebContents* web_contents,
   double zoom_factor;
   if (options.Get(options::kZoomFactor, &zoom_factor))
     zoom_controller_->SetDefaultZoomFactor(zoom_factor);
+  zoom_controller_->SetZoomMode(WebContentsZoomController::ZoomMode::ISOLATED);
 }
 
 void WebContents::InitWithSessionAndOptions(
@@ -2422,12 +2431,15 @@ bool WebContents::SendIPCMessageToFrame(bool internal,
 
 void WebContents::SendInputEvent(v8::Isolate* isolate,
                                  v8::Local<v8::Value> input_event) {
-  content::RenderWidgetHostView* view =
-      web_contents()->GetRenderWidgetHostView();
+  content::RenderFrameHost* focused_frame = web_contents()->GetFocusedFrame();
+  if (!focused_frame)
+    focused_frame = web_contents()->GetMainFrame();
+  content::RenderWidgetHostView* view = focused_frame->GetView();
   if (!view)
     return;
 
   content::RenderWidgetHost* rwh = view->GetRenderWidgetHost();
+
   blink::WebInputEvent::Type type =
       gin::GetWebInputEventType(isolate, input_event);
   if (blink::WebInputEvent::IsMouseEventType(type)) {
@@ -2453,26 +2465,41 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
   } else if (type == blink::WebInputEvent::Type::kMouseWheel) {
     blink::WebMouseWheelEvent mouse_wheel_event;
     if (gin::ConvertFromV8(isolate, input_event, &mouse_wheel_event)) {
+      // Chromium expects phase info in wheel events (and applies a
+      // DCHECK to verify it). See: https://crbug.com/756524.
+      mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      mouse_wheel_event.event_action =
+          blink::WebMouseWheelEvent::EventAction::kScroll;
+      mouse_wheel_event.momentum_phase =
+          blink::WebMouseWheelEvent::kPhaseBlocked;
+      mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
+      mouse_wheel_event.dispatch_type =
+          blink::WebInputEvent::DispatchType::kBlocking;
       if (IsOffScreen()) {
 #if BUILDFLAG(ENABLE_OSR)
         GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
             mouse_wheel_event);
 #endif
       } else {
-        // Chromium expects phase info in wheel events (and applies a
-        // DCHECK to verify it). See: https://crbug.com/756524.
-        mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
-        mouse_wheel_event.dispatch_type =
-            blink::WebInputEvent::DispatchType::kBlocking;
         rwh->ForwardWheelEvent(mouse_wheel_event);
+      }
 
-        // Send a synthetic wheel event with phaseEnded to finish scrolling.
-        mouse_wheel_event.has_synthetic_phase = true;
-        mouse_wheel_event.delta_x = 0;
-        mouse_wheel_event.delta_y = 0;
-        mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
-        mouse_wheel_event.dispatch_type =
-            blink::WebInputEvent::DispatchType::kEventNonBlocking;
+      // Send a synthetic wheel event with phaseEnded to finish scrolling.
+      mouse_wheel_event.SetTimeStamp(ui::EventTimeForNow());
+      mouse_wheel_event.has_synthetic_phase = true;
+      mouse_wheel_event.delta_x = 0;
+      mouse_wheel_event.delta_y = 0;
+      mouse_wheel_event.wheel_ticks_x = 0;
+      mouse_wheel_event.wheel_ticks_y = 0;
+      mouse_wheel_event.phase = blink::WebMouseWheelEvent::kPhaseEnded;
+      mouse_wheel_event.dispatch_type =
+          blink::WebInputEvent::DispatchType::kEventNonBlocking;
+      if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+        GetOffScreenRenderWidgetHostView()->SendMouseWheelEvent(
+            mouse_wheel_event);
+#endif
+      } else {
         rwh->ForwardWheelEvent(mouse_wheel_event);
       }
       return;
@@ -2618,7 +2645,26 @@ bool WebContents::IsOffScreen() const {
 
 #if BUILDFLAG(ENABLE_OSR)
 void WebContents::OnPaint(const gfx::Rect& dirty_rect, const SkBitmap& bitmap) {
-  Emit("paint", dirty_rect, gfx::Image::CreateFrom1xBitmap(bitmap));
+  for (PaintObserver& observer : paint_observers_)
+    observer.OnPaint(dirty_rect, bitmap);
+  // Emit("paint", gin::ConvertToV8(isolate(), dirty_rect),
+  //      gfx::Image::CreateFrom1xBitmap(bitmap));
+}
+
+void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
+                                 const gpu::SyncToken& sync_token,
+                                 const gfx::Rect& content_rect,
+                                 bool is_popup,
+                                 void (*callback)(void*, void*),
+                                 void* context) {
+  if (paint_observers_.might_have_observers()) {
+    for (PaintObserver& observer : paint_observers_)
+      observer.OnTexturePaint(std::move(mailbox), std::move(sync_token),
+                              std::move(content_rect), is_popup, callback,
+                              context);
+  } else {
+    callback(context, nullptr);
+  }
 }
 
 void WebContents::StartPainting() {
@@ -2648,6 +2694,17 @@ int WebContents::GetFrameRate() const {
   auto* osr_wcv = GetOffScreenWebContentsView();
   return osr_wcv ? osr_wcv->GetFrameRate() : 0;
 }
+
+void WebContents::SetScaleFactor(float pixel_scale_factor) {
+  auto* osr_wcv = GetOffScreenWebContentsView();
+  if (osr_wcv)
+    osr_wcv->SetScaleFactor(pixel_scale_factor);
+}
+
+float WebContents::GetScaleFactor() const {
+  auto* osr_wcv = GetOffScreenWebContentsView();
+  return osr_wcv ? osr_wcv->GetScaleFactor() : 0.0f;
+}
 #endif
 
 void WebContents::Invalidate() {
@@ -2666,10 +2723,11 @@ void WebContents::Invalidate() {
 
 gfx::Size WebContents::GetSizeForNewRenderView(content::WebContents* wc) {
   if (IsOffScreen() && wc == web_contents()) {
-    auto* relay = NativeWindowRelay::FromWebContents(web_contents());
+    auto* relay = OffscreenWindowRelay::FromWebContents(web_contents());
     if (relay) {
-      auto* owner_window = relay->GetNativeWindow();
-      return owner_window ? owner_window->GetSize() : gfx::Size();
+      auto* offscreen_window = relay->GetOffscreenWindow();
+      return offscreen_window ? offscreen_window->GetInternalSize()
+                              : gfx::Size();
     }
   }
 
@@ -2942,6 +3000,10 @@ void WebContents::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("isPainting", &WebContents::IsPainting)
       .SetMethod("setFrameRate", &WebContents::SetFrameRate)
       .SetMethod("getFrameRate", &WebContents::GetFrameRate)
+      .SetProperty("frameRate", &WebContents::GetFrameRate,
+                   &WebContents::SetFrameRate)
+      .SetProperty("scaleFactor", &WebContents::GetScaleFactor,
+                   &WebContents::SetScaleFactor)
 #endif
       .SetMethod("invalidate", &WebContents::Invalidate)
       .SetMethod("setZoomLevel", &WebContents::SetZoomLevel)

@@ -207,11 +207,6 @@ bool ElectronMainDelegate::BasicStartupComplete(int* exit_code) {
     logging::SetMinLogLevel(logging::LOG_NUM_SEVERITIES);
   }
 
-  logging::InitLogging(settings);
-
-  // Logging with pid and timestamp.
-  logging::SetLogItems(true, false, true, false);
-
   // Enable convient stack printing. This is enabled by default in non-official
   // builds.
   if (env->HasVar("ELECTRON_ENABLE_STACK_DUMPING"))
@@ -225,6 +220,28 @@ bool ElectronMainDelegate::BasicStartupComplete(int* exit_code) {
 
   chrome::RegisterPathProvider();
   electron::RegisterPathProvider();
+
+  command_line->AppendSwitch(service_manager::switches::kNoSandbox);
+  base::FilePath log_filename;
+  if (base::PathService::Get(DIR_APP_DATA, &log_filename)) {
+    log_filename = log_filename.AppendASCII("MaxWhere");
+    log_filename = log_filename.AppendASCII("mxw-chromium.log");
+
+    settings.log_file_path = log_filename.value().c_str();
+    settings.lock_log = logging::LOCK_LOG_FILE;
+    settings.delete_old = logging::DELETE_OLD_LOG_FILE;
+    if (!command_line->HasSwitch(::switches::kEnableLogging) &&
+        !env->HasVar("ELECTRON_ENABLE_LOGGING")) {
+      settings.logging_dest = logging::LOG_TO_FILE;
+    } else {
+      settings.logging_dest = logging::LOG_TO_ALL;
+    }
+  }
+
+  logging::InitLogging(settings);
+
+  // Logging with pid and timestamp.
+  logging::SetLogItems(true, false, true, false);
 
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
   ContentSettingsPattern::SetNonWildcardDomainNonPortSchemes(
@@ -327,6 +344,9 @@ void ElectronMainDelegate::PreSandboxStartup() {
 #if defined(OS_MACOSX)
     // Enable AVFoundation.
     command_line->AppendSwitch("enable-avfoundation");
+    command_line->AppendSwitch(::switches::kDisableRemoteCoreAnimation);
+    command_line->AppendSwitch(
+        ::switches::kDisableGpuMemoryBufferCompositorResources);
 #endif
   }
 }

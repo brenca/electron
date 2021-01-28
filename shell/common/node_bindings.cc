@@ -48,6 +48,8 @@
   V(electron_browser_menu)               \
   V(electron_browser_message_port)       \
   V(electron_browser_net)                \
+  V(electron_browser_osr_host_view)      \
+  V(electron_browser_offscreen_window)   \
   V(electron_browser_power_monitor)      \
   V(electron_browser_power_save_blocker) \
   V(electron_browser_protocol)           \

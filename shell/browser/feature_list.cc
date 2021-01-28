@@ -9,6 +9,7 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
+#include "components/viz/common/features.h"
 #include "content/public/common/content_features.h"
 #include "electron/buildflags/buildflags.h"
 #include "media/base/media_switches.h"
@@ -34,7 +35,9 @@ void InitializeFeatureList() {
       // https://groups.google.com/a/chromium.org/g/embedder-dev/c/4yJi4Twj2NM/m/9bhpWureCAAJ
       std::string(",") + net::features::kSameSiteByDefaultCookies.name +
       std::string(",") +
-      net::features::kCookiesWithoutSameSiteMustBeSecure.name;
+      net::features::kCookiesWithoutSameSiteMustBeSecure.name +
+      // Disabled for OSR
+      std::string(",") + features::kUseSkiaRenderer.name;
 
   // https://www.polymer-project.org/blog/2018-10-02-webcomponents-v0-deprecations
   // https://chromium-review.googlesource.com/c/chromium/src/+/1869562

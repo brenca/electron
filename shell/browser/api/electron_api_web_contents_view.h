@@ -34,6 +34,7 @@ class WebContentsView : public View, public content::WebContentsObserver {
   static void BuildPrototype(v8::Isolate* isolate,
                              v8::Local<v8::FunctionTemplate> prototype);
 
+  int32_t ID() const;
   // Public APIs.
   gin::Handle<WebContents> GetWebContents(v8::Isolate* isolate);
 

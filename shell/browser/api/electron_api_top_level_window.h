@@ -93,7 +93,7 @@ class TopLevelWindow : public gin_helper::TrackableObject<TopLevelWindow>,
   void Close();
   virtual void Focus();
   virtual void Blur();
-  bool IsFocused();
+  virtual bool IsFocused();
   void Show();
   void ShowInactive();
   void Hide();

@@ -385,6 +385,7 @@ source_set("electron_lib") {
     "//base",
     "//base:i18n",
     "//content/public/app",
+    "//electron/native_api:offscreen_headers",
   ]
 
   include_dirs = [
@@ -802,6 +803,7 @@ if (is_mac) {
     public_deps = [
       ":electron_framework_libraries",
       ":electron_lib",
+      "//electron/native_api",
     ]
     deps = [
       ":electron_angle_library",
@@ -1071,6 +1073,7 @@ if (is_mac) {
       "//components/crash/core/app",
       "//content:sandbox_helper_win",
       "//electron/buildflags",
+      "//electron/native_api",
       "//ui/strings",
     ]
 
@@ -1339,6 +1342,66 @@ dist_zip("hunspell_dictionaries_zip") {
   flatten = true
 
   outputs = [ "$root_build_dir/hunspell_dictionaries.zip" ]
+}
+
+copy("EGL_headers") {
+  sources = [
+    "//third_party/khronos/EGL/egl.h",
+    "//third_party/khronos/EGL/eglext.h",
+    "//third_party/khronos/EGL/eglplatform.h",
+  ]
+  outputs = [ "$root_gen_dir/EGL/{{source_file_part}}" ]
+}
+
+copy("GLES2_headers") {
+  sources = [
+    "//gpu/GLES2/gl2chromium.h",
+    "//gpu/GLES2/gl2chromium_autogen.h",
+    "//gpu/GLES2/gl2extchromium.h",
+    "//third_party/khronos/GLES2/gl2.h",
+    "//third_party/khronos/GLES2/gl2ext.h",
+    "//third_party/khronos/GLES2/gl2platform.h",
+  ]
+  outputs = [ "$root_gen_dir/GLES2/{{source_file_part}}" ]
+}
+
+copy("GLES2_clib_headers") {
+  sources = [ "//gpu/command_buffer/client/gles2_c_lib_export.h" ]
+  outputs = [ "$root_gen_dir/gpu/command_buffer/client/{{source_file_part}}" ]
+}
+
+copy("GLES3_headers") {
+  sources = [
+    "//third_party/khronos/GLES3/gl3.h",
+    "//third_party/khronos/GLES3/gl31.h",
+    "//third_party/khronos/GLES3/gl32.h",
+    "//third_party/khronos/GLES3/gl3platform.h",
+  ]
+  outputs = [ "$root_gen_dir/GLES3/{{source_file_part}}" ]
+}
+
+copy("KHR_headers") {
+  sources = [ "//third_party/khronos/KHR/khrplatform.h" ]
+  outputs = [ "$root_gen_dir/KHR/{{source_file_part}}" ]
+}
+
+group("electron_lib_file") {
+  deps = [ ":electron_app" ]
+
+  data = [ "$root_build_dir/electron.lib" ]
+}
+
+dist_zip("gles_dist") {
+  data_deps = [
+    ":EGL_headers",
+    ":GLES2_clib_headers",
+    ":GLES2_headers",
+    ":GLES3_headers",
+    ":KHR_headers",
+    ":electron_lib_file",
+  ]
+
+  outputs = [ "$root_build_dir/gles_dist.zip" ]
 }
 
 group("electron") {
