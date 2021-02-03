@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Heilig Benedek <benecene@gmail.com>
+Date: Wed, 3 Feb 2021 17:28:26 +0100
+Subject: feat: add SetScaleFactorCorrection API
+
+This patch adds the SetScaleFactorCorrection API that allows the user to
+adjust the webpages render scale with a second tier scale factor, that
+is independent of the device scale factor and the zoom factor.
+
+diff --git a/third_party/blink/public/mojom/frame/frame.mojom b/third_party/blink/public/mojom/frame/frame.mojom
+index 713eca269092f2ffabfd99c0196cdfc82652bec4..f9e3589dd8ee05174ed119d3590a07b142d565e7 100644
+--- a/third_party/blink/public/mojom/frame/frame.mojom
++++ b/third_party/blink/public/mojom/frame/frame.mojom
+@@ -803,6 +803,8 @@ interface LocalMainFrame {
+   // Scales the view without affecting layout by using the visual viewport.
+   SetScaleFactor(float scale);
+ 
++  SetScaleFactorCorrection(float scale);
++
+   // Instructs the renderer to close the current page, including running the
+   // onunload event handler.
+   ClosePage() => ();
+diff --git a/third_party/blink/public/web/web_view.h b/third_party/blink/public/web/web_view.h
+index 50f0c46c8fcbb4ee8ebb316f859f84d02d93ceda..b82d3f2a1486be7aec8733e8ebedafd86ade4ef5 100644
+--- a/third_party/blink/public/web/web_view.h
++++ b/third_party/blink/public/web/web_view.h
+@@ -285,6 +285,10 @@ class WebView {
+ 
+   virtual float ZoomFactorForDeviceScaleFactor() = 0;
+ 
++  virtual void SetScaleFactorCorrection(float) = 0;
++
++  virtual float ScaleFactorCorrection() = 0;
++
+   // This method is used for testing.
+   // Resize the view at the same time as changing the state of the top
+   // controls. If |browser_controls_shrink_layout| is true, the embedder shrunk
+diff --git a/third_party/blink/renderer/core/exported/web_view_impl.cc b/third_party/blink/renderer/core/exported/web_view_impl.cc
+index 2ba1cb1605ba5a10d5db78f4d3b440d431baceb1..552d6011b1209ba617b86a9aeed79c0f756f6e5c 100644
+--- a/third_party/blink/renderer/core/exported/web_view_impl.cc
++++ b/third_party/blink/renderer/core/exported/web_view_impl.cc
+@@ -2313,6 +2313,11 @@ double WebViewImpl::SetZoomLevel(double zoom_level) {
+       zoom_factor *= zoom_factor_for_device_scale_factor_;
+     }
+   }
++
++  AsView().page->SetDeviceScaleFactorDeprecated(
++      device_scale_factor_ / scale_factor_correction_);
++  zoom_factor *= scale_factor_correction_;
++
+   PropagateZoomFactorToLocalFrameRoots(AsView().page->MainFrame(), zoom_factor);
+ 
+   return zoom_level_;
+@@ -2363,6 +2368,7 @@ void WebViewImpl::SetPageScaleFactor(float scale_factor) {
+ }
+ 
+ void WebViewImpl::SetDeviceScaleFactor(float scale_factor) {
++  device_scale_factor_ = scale_factor;
+   if (!GetPage())
+     return;
+ 
+@@ -2381,6 +2387,11 @@ void WebViewImpl::SetZoomFactorForDeviceScaleFactor(
+   SetZoomLevel(zoom_level_);
+ }
+ 
++void WebViewImpl::SetScaleFactorCorrection(float scale_factor_correction) {
++  scale_factor_correction_ = scale_factor_correction;
++  SetZoomLevel(zoom_level_);
++}
++
+ void WebViewImpl::SetPageLifecycleState(
+     mojom::blink::PageLifecycleStatePtr state,
+     base::Optional<base::TimeTicks> navigation_start,
+diff --git a/third_party/blink/renderer/core/exported/web_view_impl.h b/third_party/blink/renderer/core/exported/web_view_impl.h
+index 3881e7a9f6fb25cbec37ddce6f87bf25b0d4a400..537b5e774422875cd2a47f707de67d1ff099f2d8 100644
+--- a/third_party/blink/renderer/core/exported/web_view_impl.h
++++ b/third_party/blink/renderer/core/exported/web_view_impl.h
+@@ -183,6 +183,10 @@ class CORE_EXPORT WebViewImpl final : public WebView,
+   float ZoomFactorForDeviceScaleFactor() override {
+     return zoom_factor_for_device_scale_factor_;
+   }
++  void SetScaleFactorCorrection(float) override;
++  float ScaleFactorCorrection() override {
++    return scale_factor_correction_;
++  }
+   void EnableAutoResizeMode(const WebSize& min_size,
+                             const WebSize& max_size) override;
+   void DisableAutoResizeMode() override;
+@@ -600,6 +604,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
+   // Additional zoom factor used to scale the content by device scale factor.
+   double zoom_factor_for_device_scale_factor_ = 0.;
+ 
++  double device_scale_factor_ = 1.;
++  double scale_factor_correction_ = 1.;
++
+   // This value, when multiplied by the font scale factor, gives the maximum
+   // page scale that can result from automatic zooms.
+   float maximum_legible_scale_ = 1.f;
+diff --git a/third_party/blink/renderer/core/frame/local_frame.cc b/third_party/blink/renderer/core/frame/local_frame.cc
+index a693d3936c493296072796c1c557790139af3d34..505db585ff3a916deca6139d9258a46bcf40ad4c 100644
+--- a/third_party/blink/renderer/core/frame/local_frame.cc
++++ b/third_party/blink/renderer/core/frame/local_frame.cc
+@@ -69,6 +69,7 @@
+ #include "third_party/blink/public/web/web_frame.h"
+ #include "third_party/blink/public/web/web_local_frame_client.h"
+ #include "third_party/blink/public/web/web_plugin.h"
++#include "third_party/blink/public/web/web_view.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+ #include "third_party/blink/renderer/bindings/core/v8/source_location.h"
+ #include "third_party/blink/renderer/core/content_capture/content_capture_manager.h"
+@@ -2156,6 +2157,11 @@ void LocalFrame::SetScaleFactor(float scale_factor) {
+   GetPage()->GetVisualViewport().SetScale(scale_factor);
+ }
+ 
++void LocalFrame::SetScaleFactorCorrection(float scale_factor) {
++  auto* web_view = (WebView*)GetPage()->GetChromeClient().GetWebView();
++  web_view->SetScaleFactorCorrection(scale_factor);
++}
++
+ void LocalFrame::ClosePage(
+     mojom::blink::LocalMainFrame::ClosePageCallback completion_callback) {
+   SECURITY_CHECK(IsMainFrame());
+diff --git a/third_party/blink/renderer/core/frame/local_frame.h b/third_party/blink/renderer/core/frame/local_frame.h
+index 6f18995c66a693a73e0329d7753c63ec1117c823..5d01e989c258b9eb724b17e3899b0bb09808de24 100644
+--- a/third_party/blink/renderer/core/frame/local_frame.h
++++ b/third_party/blink/renderer/core/frame/local_frame.h
+@@ -590,6 +590,7 @@ class CORE_EXPORT LocalFrame final : public Frame,
+   void AnimateDoubleTapZoom(const gfx::Point& point,
+                             const gfx::Rect& rect) override;
+   void SetScaleFactor(float scale) override;
++  void SetScaleFactorCorrection(float scale) override;
+   void ClosePage(
+       mojom::blink::LocalMainFrame::ClosePageCallback callback) override;
+   // Performs the specified plugin action on the node at the given location.

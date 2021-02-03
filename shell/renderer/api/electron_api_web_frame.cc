@@ -373,6 +373,21 @@ double GetZoomFactor(gin_helper::ErrorThrower thrower,
   return blink::PageZoomLevelToZoomFactor(zoom_level);
 }
 
+void SetPageScale(gin_helper::ErrorThrower thrower,
+                  v8::Local<v8::Value> window,
+                  double scale) {
+  auto* render_frame = GetRenderFrame(window);
+  if (!render_frame) {
+    thrower.ThrowError(
+        "Render frame was torn down before webFrame.setPageScale "
+        "could be executed");
+    return;
+  }
+
+  blink::WebFrame* web_frame = render_frame->GetWebFrame();
+  web_frame->View()->SetScaleFactorCorrection(scale);
+}
+
 void SetVisualZoomLevelLimits(gin_helper::ErrorThrower thrower,
                               v8::Local<v8::Value> window,
                               double min_level,
@@ -813,6 +828,7 @@ void Initialize(v8::Local<v8::Object> exports,
   dict.SetMethod("getZoomLevel", &GetZoomLevel);
   dict.SetMethod("setZoomFactor", &SetZoomFactor);
   dict.SetMethod("getZoomFactor", &GetZoomFactor);
+  dict.SetMethod("setPageScale", &SetPageScale);
   dict.SetMethod("setVisualZoomLevelLimits", &SetVisualZoomLevelLimits);
   dict.SetMethod("allowGuestViewElementDefinition",
                  &AllowGuestViewElementDefinition);

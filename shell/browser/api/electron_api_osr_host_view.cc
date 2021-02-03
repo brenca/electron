@@ -27,8 +27,6 @@ OsrHostView::OsrHostView(v8::Isolate* isolate) : View() {
 }
 
 OsrHostView::~OsrHostView() {
-  LOG(INFO) << "~OsrHostView" << '\n';
-  __debugbreak();
   view()->RemoveAllChildViews(true);
 }
 

@@ -22,6 +22,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ssl/security_state_tab_helper.h"
 #include "content/browser/frame_host/frame_tree_node.h"             // nogncheck
+#include "content/browser/frame_host/render_frame_host_impl.h"  // nogncheck
 #include "content/browser/frame_host/render_frame_host_manager.h"   // nogncheck
 #include "content/browser/renderer_host/render_widget_host_impl.h"  // nogncheck
 #include "content/browser/renderer_host/render_widget_host_view_base.h"  // nogncheck
@@ -2758,6 +2759,12 @@ double WebContents::GetZoomFactor() const {
   return blink::PageZoomLevelToZoomFactor(level);
 }
 
+void WebContents::SetPageScale(double scale) {
+  auto* frame = static_cast<content::RenderFrameHostImpl*>(
+        web_contents()->GetMainFrame());
+  frame->GetAssociatedLocalMainFrame()->SetScaleFactorCorrection(scale);
+}
+
 void WebContents::SetTemporaryZoomLevel(double level) {
   zoom_controller_->SetTemporaryZoomLevel(level);
 }
@@ -3010,6 +3017,7 @@ void WebContents::BuildPrototype(v8::Isolate* isolate,
       .SetMethod("getZoomLevel", &WebContents::GetZoomLevel)
       .SetMethod("setZoomFactor", &WebContents::SetZoomFactor)
       .SetMethod("getZoomFactor", &WebContents::GetZoomFactor)
+      .SetMethod("setPageScale", &WebContents::SetPageScale)
       .SetMethod("getType", &WebContents::GetType)
       .SetMethod("_getPreloadPaths", &WebContents::GetPreloadPaths)
       .SetMethod("getWebPreferences", &WebContents::GetWebPreferences)

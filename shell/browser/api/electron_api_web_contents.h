@@ -360,6 +360,8 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   void SetZoomFactor(gin_helper::ErrorThrower thrower, double factor);
   double GetZoomFactor() const;
 
+  void SetPageScale(double scale);
+
   // Callback triggered on permission response.
   void OnEnterFullscreenModeForTab(
       content::RenderFrameHost* requesting_frame,

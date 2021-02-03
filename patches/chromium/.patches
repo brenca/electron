@@ -129,3 +129,4 @@ cherry-pick-19aeffd4d93f.patch
 cherry-pick-d866af575997.patch
 command_buffer_demo.patch
 hardware_accelerated_offscreen.patch
+scale-correction-factor.patch
