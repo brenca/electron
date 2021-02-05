@@ -1177,7 +1177,10 @@ void OffScreenRenderWidgetHostView::SetupFrameRate() {
 bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
   display::Display display =
       display::Screen::GetScreen()->GetDisplayNearestView(GetNativeView());
-  const float scaleFactor = display.device_scale_factor();
+  float scaleFactor = display.device_scale_factor();
+  if (!UsingAutoScaleFactor()) {
+    scaleFactor = manual_device_scale_factor_;
+  }
   current_device_scale_factor_ = scaleFactor;
 
   gfx::Size size = GetViewBounds().size();
