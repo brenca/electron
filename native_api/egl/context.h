@@ -14,7 +14,7 @@
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
 #include "ui/gfx/presentation_feedback.h"
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
 #include "electron/native_api/egl/overlay_surface.h"
 #endif
 
@@ -78,7 +78,7 @@ class Context : public base::RefCountedThreadSafe<Context> {
   bool is_destroyed_;
   bool should_set_draw_rectangle_;
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
   OverlaySurface* overlay_surface_;
 #endif
 

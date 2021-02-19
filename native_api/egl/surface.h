@@ -58,7 +58,7 @@ class Surface : public base::RefCountedThreadSafe<Surface> {
   EGLNativeWindowType win_;
   bool is_offscreen_;
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
   NSWindowBridge* window_bridge_;
 #endif
 

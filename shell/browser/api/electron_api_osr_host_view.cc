@@ -14,7 +14,7 @@
 #include "shell/common/gin_helper/object_template_builder.h"
 #include "shell/common/node_includes.h"
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
 #include "shell/browser/ui/cocoa/delayed_native_view_host.h"
 #endif
 

@@ -121,7 +121,6 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void SetActive(bool active) override;
   void ShowDefinitionForSelection() override;
   void SpeakSelection() override;
-  bool UpdateNSViewAndDisplay();
 #endif  // defined(OS_MACOSX)
 
   // content::RenderWidgetHostViewBase:
@@ -150,7 +149,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   void TransformPointToRootSurface(gfx::PointF* point) override;
   gfx::Rect GetBoundsInRootWindow() override;
 
-#if !defined(OS_MAC)
+#if !defined(OS_MACOSX)
   viz::ScopedSurfaceIdAllocator DidUpdateVisualProperties(
       const cc::RenderFrameMetadata& metadata) override;
 #endif

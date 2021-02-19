@@ -83,7 +83,7 @@ class FileSelectHelper : public content::WebContentsObserver,
   // temporary destination, if the zip was successful. Otherwise returns an
   // empty path.
   static base::FilePath ZipPackage(const base::FilePath& path);
-#endif  // defined(OS_MAC)
+#endif  // defined(OS_MACOSX)
 
   // content::RenderWidgetHostObserver:
   void RenderWidgetHostDestroyed(

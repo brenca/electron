@@ -16,13 +16,16 @@
 
 namespace egl {
 
-class OverlaySurface {
+class OverlaySurface : public viz::BufferQueue::SyncTokenProvider {
  public:
   OverlaySurface(
       scoped_refptr<viz::ContextProviderCommandBuffer> context_provider,
       gpu::SurfaceHandle surface_handle);
 
-  ~OverlaySurface();
+  ~OverlaySurface() override;
+
+  // viz::BufferQueue::SyncTokenProvider
+  gpu::SyncToken GenSyncToken() override;
 
   void Reshape(const gfx::Size& size, float device_scale_factor);
 
@@ -32,13 +35,19 @@ class OverlaySurface {
 
  private:
   scoped_refptr<viz::ContextProviderCommandBuffer> context_provider_;
-  gpu::SurfaceHandle surface_handle_;
+
   std::unique_ptr<viz::BufferQueue> buffer_queue_;
+  base::flat_map<gpu::Mailbox, unsigned> buffer_queue_textures_;
 
   unsigned current_texture_ = 0u;
+  unsigned last_bound_texture_ = 0u;
+  gpu::Mailbox last_bound_mailbox_;
+  unsigned texture_target_ = 0u;
+
   unsigned fbo_ = 0u;
 
   gfx::Size size_;
+  float scale_;
 
   DISALLOW_COPY_AND_ASSIGN(OverlaySurface);
 };

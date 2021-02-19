@@ -259,9 +259,11 @@ OffScreenRenderWidgetHostView::OffScreenRenderWidgetHostView(
   compositor_->SetRootLayer(root_layer_.get());
   compositor_->AddChildFrameSink(GetFrameSinkId());
 
+#if defined(OS_WIN)
   auto* const gpu_data_manager = content::GpuDataManagerImpl::GetInstance();
   compositor_->SetShouldDisableSwapUntilResize(
       gpu_data_manager->GetGPUInfo().overlay_info.direct_composition);
+#endif  // defined(OS_WIN)
 
   // This may result in a call to GetFrameSinkId().
   render_widget_host_->SetView(this);
@@ -482,15 +484,12 @@ void OffScreenRenderWidgetHostView::TakeFallbackContentFrom(
   host()->GetContentRenderingTimeoutFrom(view_osr->host());
 }
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
 void OffScreenRenderWidgetHostView::SetActive(bool active) {}
 
 void OffScreenRenderWidgetHostView::ShowDefinitionForSelection() {}
 
 void OffScreenRenderWidgetHostView::SpeakSelection() {}
-
-void OffScreenRenderWidgetHostView::SetWindowFrameInScreen(
-    const gfx::Rect& rect) {}
 #endif
 
 void OffScreenRenderWidgetHostView::ResetFallbackToFirstNavigationSurface() {
@@ -617,7 +616,7 @@ gfx::Rect OffScreenRenderWidgetHostView::GetBoundsInRootWindow() {
   return gfx::Rect(size_);
 }
 
-#if !defined(OS_MAC)
+#if !defined(OS_MACOSX)
 viz::ScopedSurfaceIdAllocator
 OffScreenRenderWidgetHostView::DidUpdateVisualProperties(
     const cc::RenderFrameMetadata& metadata) {
@@ -1194,7 +1193,9 @@ bool OffScreenRenderWidgetHostView::SetRootLayerSize(bool force) {
   GetRootLayer()->SetBounds(gfx::Rect(size));
 
   if (compositor_) {
-    compositor_->DisableSwapUntilResize();
+    #if defined(OS_WIN)
+      compositor_->DisableSwapUntilResize();
+    #endif  // defined(OS_WIN)
     compositor_local_surface_id_allocator_.GenerateId();
     compositor_->SetScaleAndSize(
         current_device_scale_factor_, SizeInPixels(),

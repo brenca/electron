@@ -360,7 +360,7 @@ int ElectronBrowserMainParts::PreCreateThreads() {
   auto* command_line = base::CommandLine::ForCurrentProcess();
   std::string locale = command_line->GetSwitchValueASCII(::switches::kLang);
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
   // The browser process only wants to support the language Cocoa will use,
   // so force the app locale to be overridden with that value. This must
   // happen before the ResourceBundle is loaded

@@ -37,7 +37,7 @@ Surface::Surface(const Config* config, gfx::Size size)
       bounds_(gfx::Rect(size)),
       is_offscreen_(true) {}
 
-#if !defined(OS_MAC)
+#if !defined(OS_MACOSX)
 Surface::Surface(const Config* config, EGLNativeWindowType win)
     : is_current_in_some_thread_(false),
       config_(config),
@@ -65,7 +65,7 @@ gpu::SurfaceHandle Surface::window() const {
 }
 
 void Surface::Destroy() {}
-#endif  // !defined(OS_MAC)
+#endif  // !defined(OS_MACOSX)
 
 Surface::~Surface() {
   Destroy();
@@ -79,7 +79,7 @@ bool Surface::is_offscreen() const {
   return is_offscreen_;
 }
 
-#if !defined(OS_MAC)
+#if !defined(OS_MACOSX)
 const gfx::Size Surface::size() {
   return bounds_.size();
 }
@@ -91,7 +91,7 @@ const gfx::Rect Surface::bounds() {
 float Surface::scale_factor() {
   return 1.f;
 }
-#endif  // !defined(OS_MAC)
+#endif  // !defined(OS_MACOSX)
 
 void Surface::set_bounds(gfx::Rect bounds) {
   bounds_ = bounds;

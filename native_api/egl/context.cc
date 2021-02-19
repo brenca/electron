@@ -26,7 +26,7 @@
 #include "ui/gfx/win/rendering_window_manager.h"
 #endif
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
 #include "ui/accelerated_widget_mac/ca_layer_frame_sink.h"
 #endif
 
@@ -60,7 +60,7 @@ bool Context::SwapBuffers(Surface* current_surface) {
   bool offscreen = current_surface->is_offscreen();
 
   if (!offscreen && current_surface->is_size_dirty() && !size.IsEmpty()) {
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
     overlay_surface_->Reshape(size, current_surface->scale_factor());
 #else
     gfx::ColorSpace color_space = gfx::ColorSpace::CreateSRGB();
@@ -71,7 +71,7 @@ bool Context::SwapBuffers(Surface* current_surface) {
     current_surface->set_size_dirty(false);
   }
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
   overlay_surface_->SwapBuffers();
 #endif
 
@@ -92,6 +92,10 @@ bool Context::SwapBuffers(Surface* current_surface) {
     }
   }
 
+#if defined(OS_MACOSX)
+  overlay_surface_->SwapBuffersComplete();
+#endif
+
   context_provider_->ContextGL()->ShallowFlushCHROMIUM();
 
   return true;
@@ -101,14 +105,13 @@ void Context::SwapBuffersComplete(
     Surface* surface,
     const gpu::SwapBuffersCompleteParams& params) {
   // send the params
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
   if (!params.ca_layer_params.is_empty && !surface->is_offscreen()) {
     ui::CALayerFrameSink* ca_layer_frame_sink =
         ui::CALayerFrameSink::FromAcceleratedWidget(surface->window());
     if (ca_layer_frame_sink)
       ca_layer_frame_sink->UpdateCALayerTree(params.ca_layer_params);
   }
-  overlay_surface_->SwapBuffersComplete();
 #endif
 }
 
@@ -222,7 +225,7 @@ bool Context::ConnectToService(Surface* surface) {
 
     context_provider_->ContextSupport()->SetAggressivelyFreeResources(true);
 
-#if defined(OS_MAC)
+#if defined(OS_MACOSX)
     overlay_surface_ = new OverlaySurface(context_provider_, surface_handle);
 #endif
 
