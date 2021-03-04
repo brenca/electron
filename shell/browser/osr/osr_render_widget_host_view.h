@@ -198,7 +198,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
                       void (*callback)(void*, void*),
                       void* context);
   void OnPopupPaint(const gfx::Rect& damage_rect);
-  void OnProxyViewPaint(const gfx::Rect& damage_rect) override;
+  void OnProxyViewPaint(OffscreenViewProxy* proxy) override;
   void CompositeFrame(const gfx::Rect& damage_rect);
 
   void CancelWidget();

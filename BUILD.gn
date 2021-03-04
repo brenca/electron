@@ -325,6 +325,7 @@ source_set("electron_lib") {
     "//chrome/app:command_ids",
     "//chrome/app/resources:platform_locale_settings",
     "//chrome/services/printing/public/mojom",
+    "//components/autofill/content/renderer",
     "//components/certificate_transparency",
     "//components/language/core/browser",
     "//components/net_log",

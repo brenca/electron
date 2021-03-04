@@ -24,6 +24,8 @@ class AutofillDriver : public mojom::ElectronAutofillDriver {
 
   ~AutofillDriver() override;
 
+  gfx::RectF TransformBoundingBoxToViewportCoordinates(
+      const gfx::RectF& bounding_box);
   void ShowAutofillPopup(const gfx::RectF& bounds,
                          const std::vector<base::string16>& values,
                          const std::vector<base::string16>& labels) override;
@@ -35,6 +37,8 @@ class AutofillDriver : public mojom::ElectronAutofillDriver {
 #if defined(TOOLKIT_VIEWS)
   std::unique_ptr<AutofillPopup> autofill_popup_;
 #endif
+
+  static std::unordered_set<AutofillDriver*> drivers_;
 
   mojo::AssociatedBinding<mojom::ElectronAutofillDriver> binding_;
 };

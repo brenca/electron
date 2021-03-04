@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "content/public/browser/render_frame_host.h"
+#include "components/viz/common/frame_sinks/delay_based_time_source.h"
 #include "shell/browser/ui/views/autofill_popup_view.h"
 #include "ui/gfx/font_list.h"
 #include "ui/native_theme/native_theme.h"
@@ -18,13 +19,13 @@ namespace electron {
 
 class AutofillPopupView;
 
-class AutofillPopup : public views::ViewObserver {
+class AutofillPopup : public views::ViewObserver,
+                      public viz::DelayBasedTimeSourceClient {
  public:
   AutofillPopup();
   ~AutofillPopup() override;
 
   void CreateView(content::RenderFrameHost* render_frame,
-                  content::RenderFrameHost* embedder_frame,
                   bool offscreen,
                   views::View* parent,
                   const gfx::RectF& bounds);
@@ -35,6 +36,8 @@ class AutofillPopup : public views::ViewObserver {
   void UpdatePopupBounds();
 
   gfx::Rect popup_bounds_in_view();
+
+  void OnTimerTick() override;
 
  private:
   friend class AutofillPopupView;
@@ -59,6 +62,8 @@ class AutofillPopup : public views::ViewObserver {
 
   int selected_index_;
 
+  bool offscreen_ = false;
+
   // Popup location
   gfx::Rect popup_bounds_;
 
@@ -82,6 +87,8 @@ class AutofillPopup : public views::ViewObserver {
 
   // The parent view that the popup view shows on. Weak ref.
   views::View* parent_ = nullptr;
+
+  std::unique_ptr<viz::DelayBasedTimeSource> time_source_;
 
   DISALLOW_COPY_AND_ASSIGN(AutofillPopup);
 };

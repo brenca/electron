@@ -8,7 +8,8 @@
 
 namespace electron {
 
-OffscreenViewProxy::OffscreenViewProxy(views::View* view) : view_(view) {
+OffscreenViewProxy::OffscreenViewProxy(views::View* view, float scale_factor)
+    : view_(view), scale_factor_(scale_factor) {
   view_bitmap_ = std::make_unique<SkBitmap>();
 }
 
@@ -34,10 +35,10 @@ const SkBitmap* OffscreenViewProxy::GetBitmap() const {
 }
 
 void OffscreenViewProxy::SetBitmap(const SkBitmap& bitmap) {
-  if (view_bounds_.width() == bitmap.width() &&
-      view_bounds_.height() == bitmap.height() && observer_) {
+  if (GetBackingBounds().width() == bitmap.width() &&
+      GetBackingBounds().height() == bitmap.height() && observer_) {
     view_bitmap_ = std::make_unique<SkBitmap>(bitmap);
-    observer_->OnProxyViewPaint(view_bounds_);
+    observer_->OnProxyViewPaint(this);
   }
 }
 

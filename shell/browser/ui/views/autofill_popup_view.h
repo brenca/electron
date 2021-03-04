@@ -77,6 +77,10 @@ class AutofillPopupView : public views::WidgetDelegateView,
                            const gfx::Point&,
                            const gfx::Point&) override;
 
+  bool IsOffscreen();
+  void Invalidate();
+  gfx::Rect BoundsForBacking();
+
  private:
   friend class AutofillPopup;
 

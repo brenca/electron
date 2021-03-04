@@ -9,7 +9,10 @@
 #include <vector>
 
 #include "base/i18n/rtl.h"
+#include "base/time/time.h"
+#include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/ui/views/autofill/autofill_popup_view_utils.h"
+#include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "electron/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "shell/browser/native_window_views.h"
@@ -42,10 +45,12 @@ AutofillPopup::~AutofillPopup() {
 }
 
 void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
-                               content::RenderFrameHost* embedder_frame_host,
                                bool offscreen,
                                views::View* parent,
                                const gfx::RectF& r) {
+  if (view_)
+    return;
+
   Hide();
 
   frame_host_ = frame_host;
@@ -56,6 +61,8 @@ void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
   views::View::ConvertPointToScreen(parent, &menu_position);
   popup_bounds_ = gfx::Rect(menu_position, element_bounds_.size());
 
+  offscreen_ = offscreen;
+
   parent_ = parent;
   parent_->AddObserver(this);
 
@@ -64,21 +71,39 @@ void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
 #if BUILDFLAG(ENABLE_OSR)
   if (offscreen) {
     auto* rwhv = frame_host->GetView();
-    if (embedder_frame_host != nullptr) {
-      rwhv = embedder_frame_host->GetView();
+
+    auto* rwhv_base = static_cast<content::RenderWidgetHostViewBase*>(rwhv);
+    if (rwhv_base->IsRenderWidgetHostViewChildFrame()) {
+      auto* child_rwhv =
+          static_cast<content::RenderWidgetHostViewChildFrame*>(rwhv_base);
+      rwhv = child_rwhv->GetRootView();
     }
 
     auto* osr_rwhv = static_cast<OffScreenRenderWidgetHostView*>(rwhv);
-    view_->view_proxy_ = std::make_unique<OffscreenViewProxy>(view_);
+    view_->view_proxy_ = std::make_unique<OffscreenViewProxy>(
+        view_, osr_rwhv->GetScaleFactor());
     osr_rwhv->AddViewProxy(view_->view_proxy_.get());
   }
 #endif
 
   // Do this after OSR setup, we check for view_proxy_ when showing
   view_->Show();
+
+  if (offscreen) {
+    time_source_ = std::make_unique<viz::DelayBasedTimeSource>(
+        base::ThreadTaskRunnerHandle::Get().get());
+    time_source_->SetClient(this);
+    time_source_->SetTimebaseAndInterval(
+      base::TimeTicks::Now(),
+      base::TimeDelta::FromSeconds(1) / 20.0);
+    time_source_->SetActive(true);
+  }
 }
 
 void AutofillPopup::Hide() {
+  if (time_source_) {
+    time_source_->SetActive(false);
+  }
   if (parent_) {
     parent_->RemoveObserver(this);
     parent_ = nullptr;
@@ -114,17 +139,28 @@ void AutofillPopup::UpdatePopupBounds() {
   gfx::Rect bounds(origin, element_bounds_.size());
   gfx::Rect window_bounds = parent_->GetBoundsInScreen();
 
+  // Provide fake parent bounds for offscreen case
+  if (offscreen_) {
+    window_bounds = gfx::Rect(0, 0, 99999, 99999);
+  }
+
   gfx::Size preferred_size =
       gfx::Size(GetDesiredPopupWidth(), GetDesiredPopupHeight());
   popup_bounds_ = CalculatePopupBounds(preferred_size, window_bounds, bounds,
                                        base::i18n::IsRTL());
 }
 
-gfx::Rect AutofillPopup::popup_bounds_in_view() {
-  gfx::Point origin(popup_bounds_.origin());
-  views::View::ConvertPointFromScreen(parent_, &origin);
+void AutofillPopup::OnTimerTick() {
+  if (view_) {
+    view_->Invalidate();
+  }
+}
 
-  return gfx::Rect(origin, popup_bounds_.size());
+gfx::Rect AutofillPopup::popup_bounds_in_view() {
+  gfx::Vector2d height_offset(0, element_bounds_.height());
+  gfx::Point menu_position(element_bounds_.origin() + height_offset);
+
+  return gfx::Rect(menu_position, popup_bounds_.size());
 }
 
 void AutofillPopup::OnViewBoundsChanged(views::View* view) {

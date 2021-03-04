@@ -75,7 +75,7 @@ void AutofillPopupView::Show() {
     auto* widget = new views::Widget;
     views::Widget::InitParams params(views::Widget::InitParams::TYPE_POPUP);
     params.delegate = this;
-    params.parent = parent_widget_->GetNativeView();
+    params.context = parent_widget_->GetNativeWindow();
     params.z_order = ui::ZOrderLevel::kFloatingUIElement;
     widget->Init(std::move(params));
 
@@ -146,6 +146,26 @@ bool AutofillPopupView::CanStartDragForView(views::View*,
   return false;
 }
 
+bool AutofillPopupView::IsOffscreen() {
+  return !!view_proxy_;
+}
+
+void AutofillPopupView::Invalidate() {
+  if (IsOffscreen()) {
+    OnPaint(nullptr);
+    DoUpdateBoundsAndRedrawPopup();
+  }
+}
+
+gfx::Rect AutofillPopupView::BoundsForBacking() {
+  if (view_proxy_) {
+    return gfx::ScaleToRoundedRect(
+        popup_->popup_bounds_in_view(), view_proxy_->GetScaleFactor());
+  } else {
+    return popup_->popup_bounds_in_view();
+  }
+}
+
 void AutofillPopupView::OnSelectedRowChanged(
     base::Optional<int> previous_row_selection,
     base::Optional<int> current_row_selection) {
@@ -167,7 +187,7 @@ void AutofillPopupView::DrawAutofillEntry(gfx::Canvas* canvas,
     return;
 
   canvas->FillRect(entry_rect, GetNativeTheme()->GetSystemColor(
-                                   popup_->GetBackgroundColorIDForRow(index)));
+                   popup_->GetBackgroundColorIDForRow(index)));
 
   const bool is_rtl = base::i18n::IsRTL();
   const int text_align =
@@ -243,11 +263,16 @@ void AutofillPopupView::OnPaint(gfx::Canvas* canvas) {
 
 #if BUILDFLAG(ENABLE_OSR)
   std::unique_ptr<cc::SkiaPaintCanvas> paint_canvas;
-  if (view_proxy_.get()) {
-    bitmap.allocN32Pixels(popup_->popup_bounds_in_view().width(),
-                          popup_->popup_bounds_in_view().height(), true);
+  if (IsOffscreen()) {
+    bitmap.allocN32Pixels(BoundsForBacking().width(),
+                          BoundsForBacking().height(), false);
     paint_canvas = std::make_unique<cc::SkiaPaintCanvas>(bitmap);
-    draw_canvas = new gfx::Canvas(paint_canvas.get(), 1.0);
+    float scale_factor = view_proxy_->GetScaleFactor();
+    draw_canvas = new gfx::Canvas(
+        paint_canvas.get(), scale_factor);
+    draw_canvas->Scale(scale_factor, -scale_factor);
+    draw_canvas->Translate(
+        gfx::Vector2d(0, -popup_->popup_bounds_in_view().height()));
   }
 #endif
 
@@ -262,7 +287,7 @@ void AutofillPopupView::OnPaint(gfx::Canvas* canvas) {
   }
 
 #if BUILDFLAG(ENABLE_OSR)
-  if (view_proxy_.get()) {
+  if (IsOffscreen()) {
     view_proxy_->SetBounds(popup_->popup_bounds_in_view());
     view_proxy_->SetBitmap(bitmap);
   }

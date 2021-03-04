@@ -16,11 +16,14 @@
 #include "base/single_thread_task_runner.h"
 #include "base/task/post_task.h"
 #include "base/time/time.h"
+#include "components/viz/common/gpu/context_provider.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
 #include "components/viz/common/quads/render_pass.h"
+#include "components/viz/common/resources/resource_format.h"
+#include "components/viz/common/resources/single_release_callback.h"
 #include "components/viz/common/surfaces/frame_sink_id_allocator.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"  // nogncheck
 #include "content/browser/renderer_host/cursor_manager.h"  // nogncheck
@@ -34,7 +37,10 @@
 #include "content/public/browser/context_factory.h"
 #include "content/public/browser/gpu_data_manager.h"
 #include "content/public/browser/render_process_host.h"
+#include "electron/native_api/offscreen.h"
 #include "gpu/command_buffer/client/gl_helper.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
 #include "media/base/video_frame.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -972,10 +978,76 @@ void OffScreenRenderWidgetHostView::OnPopupPaint(const gfx::Rect& damage_rect) {
       ConvertRectToPixels(damage_rect, GetScaleFactor())));
 }
 
+void DeleteSharedImage(scoped_refptr<viz::ContextProvider> context_provider,
+                       gpu::Mailbox mailbox,
+                       const gpu::SyncToken& sync_token,
+                       bool is_lost) {
+  DCHECK(context_provider);
+  gpu::SharedImageInterface* sii = context_provider->SharedImageInterface();
+  DCHECK(sii);
+  sii->DestroySharedImage(sync_token, mailbox);
+}
+
 void OffScreenRenderWidgetHostView::OnProxyViewPaint(
-    const gfx::Rect& damage_rect) {
-  CompositeFrame(gfx::ToEnclosingRect(
-      ConvertRectToPixels(damage_rect, GetScaleFactor())));
+    OffscreenViewProxy* proxy) {
+  ui::ContextFactory* context_factory = content::GetContextFactory();
+  scoped_refptr<viz::ContextProvider> context_provider =
+      context_factory->SharedMainThreadContextProvider();
+  gpu::SharedImageInterface* sii = context_provider->SharedImageInterface();
+
+  if (!proxy || !proxy->GetBitmap())
+    return;
+
+  void* pixel_data = proxy->GetBitmap()->getPixels();
+  size_t pixel_size = proxy->GetBitmap()->computeByteSize();
+
+  if (pixel_size == 0)
+    return;
+
+  base::span<const uint8_t> pixels = base::make_span(
+      reinterpret_cast<const uint8_t*>(pixel_data), pixel_size);
+
+  gpu::Mailbox mailbox = sii->CreateSharedImage(
+      viz::ResourceFormat::RGBA_8888, proxy->GetBackingBounds().size(),
+      gfx::ColorSpace(), gpu::SHARED_IMAGE_USAGE_DISPLAY, pixels);
+  gpu::SyncToken sync_token = sii->GenVerifiedSyncToken();
+
+  auto release_callback = viz::SingleReleaseCallback::Create(base::BindOnce(
+      &DeleteSharedImage, std::move(context_provider), mailbox));
+
+  struct FramePinner {
+    std::unique_ptr<viz::SingleReleaseCallback> releaser;
+  };
+
+  texture_callback_.Run(
+      mailbox, sync_token, proxy->GetBackingBounds(), true,
+      [](void* context, void* token) {
+        FramePinner* pinner = static_cast<FramePinner*>(context);
+
+        std::unique_ptr<viz::SingleReleaseCallback> release_callback =
+            std::move(pinner->releaser);
+
+        electron::api::gpu::SyncToken* api_sync_token =
+            static_cast<electron::api::gpu::SyncToken*>(token);
+
+        if (api_sync_token != nullptr) {
+          gpu::SyncToken sync_token(
+              (gpu::CommandBufferNamespace)api_sync_token->namespace_id,
+              gpu::CommandBufferId::FromUnsafeValue(
+                  api_sync_token->command_buffer_id),
+              api_sync_token->release_count);
+          if (api_sync_token->verified_flush) {
+            sync_token.SetVerifyFlush();
+          }
+
+          release_callback->Run(sync_token, false);
+        } else {
+          release_callback->Run(gpu::SyncToken(), false);
+        }
+
+        delete pinner;
+      },
+      new FramePinner{std::move(release_callback)});
 }
 
 void OffScreenRenderWidgetHostView::CompositeFrame(
@@ -1063,7 +1135,9 @@ void OffScreenRenderWidgetHostView::RemoveViewProxy(OffscreenViewProxy* proxy) {
 void OffScreenRenderWidgetHostView::ProxyViewDestroyed(
     OffscreenViewProxy* proxy) {
   proxy_views_.erase(proxy);
-  CompositeFrame(gfx::Rect(GetRequestedRendererSize()));
+
+  texture_callback_.Run(gpu::Mailbox(), gpu::SyncToken(),
+                        gfx::Rect(), true, nullptr, nullptr);
 }
 
 void OffScreenRenderWidgetHostView::SetPainting(bool painting) {

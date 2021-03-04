@@ -19,13 +19,13 @@ class OffscreenViewProxy;
 
 class OffscreenViewProxyObserver {
  public:
-  virtual void OnProxyViewPaint(const gfx::Rect& damage_rect) = 0;
+  virtual void OnProxyViewPaint(OffscreenViewProxy* proxy) = 0;
   virtual void ProxyViewDestroyed(OffscreenViewProxy* proxy) = 0;
 };
 
 class OffscreenViewProxy {
  public:
-  explicit OffscreenViewProxy(views::View* view);
+  explicit OffscreenViewProxy(views::View* view, float scale_factor);
   ~OffscreenViewProxy();
 
   void SetObserver(OffscreenViewProxyObserver* observer);
@@ -37,12 +37,19 @@ class OffscreenViewProxy {
   const gfx::Rect& GetBounds();
   void SetBounds(const gfx::Rect& bounds);
 
+  float GetScaleFactor() { return scale_factor_; }
+
+  gfx::Rect GetBackingBounds() {
+    return gfx::ScaleToRoundedRect(GetBounds(), GetScaleFactor());
+  }
+
   void OnEvent(ui::Event* event);
 
   void ResetView() { view_ = nullptr; }
 
  private:
   views::View* view_;
+  float scale_factor_ = 1.0f;
 
   gfx::Rect view_bounds_;
   std::unique_ptr<SkBitmap> view_bitmap_;
