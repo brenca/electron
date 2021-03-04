@@ -77,6 +77,14 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
     virtual gfx::Size GetInitialSize() const = 0;
   };
 
+  class Observer : public base::CheckedObserver {
+   public:
+    ~Observer() override {}
+
+    virtual void OnOSRRWHVResize() {}
+    virtual void OnOSRRWHVClosed() {}
+  };
+
   OffScreenRenderWidgetHostView(Initializer* initializer,
                                 content::RenderWidgetHost* host,
                                 OffScreenRenderWidgetHostView* parent,
@@ -88,6 +96,9 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
   content::BrowserAccessibilityManager* CreateBrowserAccessibilityManager(
       content::BrowserAccessibilityDelegate*,
       bool) override;
+
+  void AddObserver(Observer* obs) { observers_.AddObserver(obs); }
+  void RemoveObserver(Observer* obs) { observers_.RemoveObserver(obs); }
 
   // viz::DelayBasedTimeSourceClient:
   void OnTimerTick() override;
@@ -335,6 +346,8 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
 
   gfx::Size size_;
   gfx::Rect popup_position_;
+
+  base::ObserverList<Observer> observers_;
 
   content::MouseWheelPhaseHandler mouse_wheel_phase_handler_;
 

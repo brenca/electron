@@ -13,7 +13,6 @@
 #include "base/threading/thread_task_runner_handle.h"
 #include "chrome/browser/ui/views/autofill/autofill_popup_view_utils.h"
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
-#include "electron/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "shell/browser/native_window_views.h"
 #include "shell/browser/ui/autofill_popup.h"
@@ -28,7 +27,6 @@
 #include "ui/gfx/text_utils.h"
 
 #if BUILDFLAG(ENABLE_OSR)
-#include "shell/browser/osr/osr_render_widget_host_view.h"
 #include "shell/browser/osr/osr_view_proxy.h"
 #endif
 
@@ -80,6 +78,8 @@ void AutofillPopup::CreateView(content::RenderFrameHost* frame_host,
     }
 
     auto* osr_rwhv = static_cast<OffScreenRenderWidgetHostView*>(rwhv);
+    offscreen_parent_ = osr_rwhv;
+    offscreen_parent_->AddObserver(this);
     view_->view_proxy_ = std::make_unique<OffscreenViewProxy>(
         view_, osr_rwhv->GetScaleFactor());
     osr_rwhv->AddViewProxy(view_->view_proxy_.get());
@@ -104,10 +104,17 @@ void AutofillPopup::Hide() {
   if (time_source_) {
     time_source_->SetActive(false);
   }
+
+  if (offscreen_parent_) {
+    offscreen_parent_->RemoveObserver(this);
+    offscreen_parent_ = nullptr;
+  }
+
   if (parent_) {
     parent_->RemoveObserver(this);
     parent_ = nullptr;
   }
+
   if (view_) {
     view_->Hide();
     view_ = nullptr;
@@ -139,10 +146,15 @@ void AutofillPopup::UpdatePopupBounds() {
   gfx::Rect bounds(origin, element_bounds_.size());
   gfx::Rect window_bounds = parent_->GetBoundsInScreen();
 
-  // Provide fake parent bounds for offscreen case
-  if (offscreen_) {
-    window_bounds = gfx::Rect(0, 0, 99999, 99999);
-  }
+  #if BUILDFLAG(ENABLE_OSR)
+    if (offscreen_) {
+      gfx::Point bounds_origin(0, 0);
+      views::View::ConvertPointToScreen(parent_, &bounds_origin);
+
+      window_bounds = gfx::Rect(bounds_origin,
+                                offscreen_parent_->GetViewBounds().size());
+    }
+  #endif
 
   gfx::Size preferred_size =
       gfx::Size(GetDesiredPopupWidth(), GetDesiredPopupHeight());
@@ -157,10 +169,10 @@ void AutofillPopup::OnTimerTick() {
 }
 
 gfx::Rect AutofillPopup::popup_bounds_in_view() {
-  gfx::Vector2d height_offset(0, element_bounds_.height());
-  gfx::Point menu_position(element_bounds_.origin() + height_offset);
+  gfx::Point origin(popup_bounds_.origin());
+  views::View::ConvertPointFromScreen(parent_, &origin);
 
-  return gfx::Rect(menu_position, popup_bounds_.size());
+  return gfx::Rect(origin, popup_bounds_.size());
 }
 
 void AutofillPopup::OnViewBoundsChanged(views::View* view) {
@@ -171,6 +183,18 @@ void AutofillPopup::OnViewBoundsChanged(views::View* view) {
 void AutofillPopup::OnViewIsDeleting(views::View* view) {
   Hide();
 }
+
+#if BUILDFLAG(ENABLE_OSR)
+
+void AutofillPopup::OnOSRRWHVResize() {
+  Hide();
+}
+
+void AutofillPopup::OnOSRRWHVClosed() {
+  Hide();
+}
+
+#endif
 
 int AutofillPopup::GetDesiredPopupHeight() {
   return 2 * kPopupBorderThickness + values_.size() * kRowHeight;

@@ -9,17 +9,25 @@
 
 #include "content/public/browser/render_frame_host.h"
 #include "components/viz/common/frame_sinks/delay_based_time_source.h"
+#include "electron/buildflags/buildflags.h"
 #include "shell/browser/ui/views/autofill_popup_view.h"
 #include "ui/gfx/font_list.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
+#if BUILDFLAG(ENABLE_OSR)
+#include "shell/browser/osr/osr_render_widget_host_view.h"
+#endif
+
 namespace electron {
 
 class AutofillPopupView;
 
 class AutofillPopup : public views::ViewObserver,
+                    #if BUILDFLAG(ENABLE_OSR)
+                      public OffScreenRenderWidgetHostView::Observer,
+                    #endif
                       public viz::DelayBasedTimeSourceClient {
  public:
   AutofillPopup();
@@ -45,6 +53,12 @@ class AutofillPopup : public views::ViewObserver,
   // views::ViewObserver:
   void OnViewBoundsChanged(views::View* view) override;
   void OnViewIsDeleting(views::View* view) override;
+
+#if BUILDFLAG(ENABLE_OSR)
+  // OffScreenRenderWidgetHostView::Observer:
+  void OnOSRRWHVResize() override;
+  void OnOSRRWHVClosed() override;
+#endif
 
   void AcceptSuggestion(int index);
 
@@ -87,6 +101,10 @@ class AutofillPopup : public views::ViewObserver,
 
   // The parent view that the popup view shows on. Weak ref.
   views::View* parent_ = nullptr;
+
+#if BUILDFLAG(ENABLE_OSR)
+  OffScreenRenderWidgetHostView* offscreen_parent_ = nullptr;
+#endif
 
   std::unique_ptr<viz::DelayBasedTimeSource> time_source_;
 

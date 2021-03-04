@@ -313,6 +313,9 @@ OffScreenRenderWidgetHostView::~OffScreenRenderWidgetHostView() {
         content::DelegatedFrameHost::HiddenCause::kOther);
   GetDelegatedFrameHost()->DetachFromCompositor();
 
+  for (Observer& observer : observers_)
+    observer.OnOSRRWHVClosed();
+
   delegated_frame_host_.reset();
   compositor_.reset();
   root_layer_.reset();
@@ -735,6 +738,9 @@ void OffScreenRenderWidgetHostView::WasResized() {
 
   SynchronizeVisualProperties(cc::DeadlinePolicy::UseExistingDeadline(),
                               base::nullopt);
+
+  for (Observer& observer : observers_)
+    observer.OnOSRRWHVResize();
 }
 
 void OffScreenRenderWidgetHostView::SynchronizeVisualProperties(
