@@ -177,6 +177,29 @@ void Context::ApplyContextReleased() {
   gles2::SetGLContext(nullptr);
 }
 
+gpu::Mailbox Context::CreateSharedImage(
+    gfx::GpuMemoryBuffer* gpu_memory_buffer,
+    const gfx::ColorSpace& color_space,
+    uint32_t usage) {
+  auto* sii = context_provider_->SharedImageInterface();
+
+  auto mailbox = sii->CreateSharedImage(
+      gpu_memory_buffer, nullptr, color_space, usage);
+
+  auto creation_token = sii->GenUnverifiedSyncToken();
+  context_provider_->ContextGL()->WaitSyncTokenCHROMIUM(
+      creation_token.GetConstData());
+
+  return mailbox;
+}
+
+void Context::DeleteSharedImage(gpu::Mailbox mailbox) {
+  auto* sii = context_provider_->SharedImageInterface();
+
+  auto deletion_token = sii->GenUnverifiedSyncToken();
+  sii->DestroySharedImage(deletion_token, mailbox);
+}
+
 bool Context::ConnectToService(Surface* surface) {
   gpu::GpuChannelEstablishFactory* factory =
       content::GetGpuChannelEstablishFactory();

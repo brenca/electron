@@ -78,6 +78,10 @@ class ELECTRON_EXTERN PaintObserver {
 ELECTRON_EXTERN void __cdecl addPaintObserver(int id, PaintObserver* observer);
 ELECTRON_EXTERN void __cdecl removePaintObserver(int id,
                                                  PaintObserver* observer);
+ELECTRON_EXTERN electron::api::gpu::Mailbox __cdecl
+createMailboxFromD3D11SharedHandle(void* handle, int width, int height);
+ELECTRON_EXTERN void __cdecl
+releaseMailbox(electron::api::gpu::Mailbox mailbox);
 
 }  // namespace offscreen
 }  // namespace api

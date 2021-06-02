@@ -10,8 +10,11 @@
 #include <EGL/egl.h>
 #include "base/macros.h"
 
+#include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/swap_buffers_complete_params.h"
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
+#include "ui/gfx/color_space.h"
+#include "ui/gfx/gpu_memory_buffer.h"
 #include "ui/gfx/presentation_feedback.h"
 
 #if defined(OS_MACOSX)
@@ -55,6 +58,13 @@ class Context : public base::RefCountedThreadSafe<Context> {
   // is current.
   void ApplyCurrentContext(Surface* surface);
   static void ApplyContextReleased();
+
+  gpu::Mailbox CreateSharedImage(
+      gfx::GpuMemoryBuffer* gpu_memory_buffer,
+      const gfx::ColorSpace& color_space,
+      uint32_t usage);
+
+  void DeleteSharedImage(gpu::Mailbox mailbox);
 
  private:
   friend class base::RefCountedThreadSafe<Context>;

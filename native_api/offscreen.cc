@@ -9,6 +9,35 @@
 #include "shell/browser/api/electron_api_web_contents.h"
 #include "shell/common/gin_helper/trackable_object.h"
 
+#if defined(OS_WIN)
+#include <windows.h>
+
+#include "gpu/command_buffer/common/shared_image_usage.h"
+#include "gpu/ipc/common/gpu_memory_buffer_impl_dxgi.h"
+#include "ui/gfx/gpu_memory_buffer.h"
+#include "native_api/egl/context.h"
+#include "native_api/egl/thread_state.h"
+#endif
+
+namespace {
+electron::api::gpu::Mailbox ApiMailboxFromGpuMailbox(::gpu::Mailbox mailbox) {
+  electron::api::gpu::Mailbox api_mailbox;
+
+  memcpy(api_mailbox.name, mailbox.name, 16);
+  api_mailbox.shared_image = mailbox.IsSharedImage();
+
+  return api_mailbox;
+}
+
+::gpu::Mailbox GpuMailboxFromApiMailbox(electron::api::gpu::Mailbox mailbox) {
+  ::gpu::Mailbox gpu_mailbox;
+
+  memcpy(gpu_mailbox.name, mailbox.name, 16);
+
+  return gpu_mailbox;
+}
+}  // namespace
+
 namespace electron {
 namespace api {
 namespace offscreen {
@@ -41,9 +70,8 @@ class WCPaintObserver : public WebContents::PaintObserver {
                       void (*callback)(void*, void*),
                       void* context) override {
     if (observer_ != nullptr) {
-      electron::api::gpu::Mailbox api_mailbox;
-      memcpy(api_mailbox.name, mailbox.name, 16);
-      api_mailbox.shared_image = mailbox.IsSharedImage();
+      electron::api::gpu::Mailbox api_mailbox =
+          ApiMailboxFromGpuMailbox(mailbox);
 
       electron::api::gpu::SyncToken api_sync_token;
       api_sync_token.verified_flush = sync_token.verified_flush();
@@ -88,6 +116,50 @@ ELECTRON_EXTERN void __cdecl removePaintObserver(int id,
       gin_helper::TrackableObject<WebContents>::FromWeakMapID(isolate, id);
 
   web_contents->RemovePaintObserver(obs);
+}
+
+ELECTRON_EXTERN electron::api::gpu::Mailbox __cdecl
+createMailboxFromD3D11SharedHandle(void* handle, int width, int height) {
+#if defined(OS_WIN)
+  egl::ThreadState* ts = egl::ThreadState::Get();
+  egl::Context* context = ts->current_context();
+
+  if (context) {
+    gfx::GpuMemoryBufferHandle gpu_memory_buffer_handle;
+    gpu_memory_buffer_handle.dxgi_handle.Set(HANDLE(handle));
+    gpu_memory_buffer_handle.type = gfx::DXGI_SHARED_HANDLE;
+
+    std::unique_ptr<::gpu::GpuMemoryBufferImplDXGI> gpu_memory_buffer =
+        ::gpu::GpuMemoryBufferImplDXGI::CreateFromHandle(
+            std::move(gpu_memory_buffer_handle), gfx::Size(width, height),
+            gfx::BufferFormat::RGBA_8888, gfx::BufferUsage::GPU_READ,
+            base::DoNothing());
+
+    const uint32_t shared_image_usage =
+        ::gpu::SharedImageUsage::SHARED_IMAGE_USAGE_DISPLAY |
+        ::gpu::SharedImageUsage::SHARED_IMAGE_USAGE_GLES2;
+
+    return ApiMailboxFromGpuMailbox(context->CreateSharedImage(
+        gpu_memory_buffer.get(), gfx::ColorSpace::CreateSRGB(),
+        shared_image_usage));
+  } else {
+    return electron::api::gpu::Mailbox();
+  }
+#else
+  return electron::api::gpu::Mailbox();
+#endif
+}
+
+ELECTRON_EXTERN void __cdecl
+releaseMailbox(electron::api::gpu::Mailbox mailbox) {
+#if defined(OS_WIN)
+  egl::ThreadState* ts = egl::ThreadState::Get();
+  egl::Context* context = ts->current_context();
+
+  if (context) {
+    context->DeleteSharedImage(GpuMailboxFromApiMailbox(mailbox));
+  }
+#endif
 }
 
 }  // namespace offscreen
