@@ -2469,9 +2469,14 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
             if (drag_image_mailbox_.has_value()) {
               auto old_content_rect = drag_image_content_rect_;
 
-              auto cursor_pos_i = gfx::Point(cursor_pos.x(), cursor_pos.y());
-              auto drag_image_top_left_corner = cursor_pos_i - drag_offset_;
-              drag_image_content_rect_.set_origin(drag_image_top_left_corner);
+              auto scale_factor = GetScaleFactor();
+              auto cursor_pos_i = gfx::Point(cursor_pos.x(),
+                                             cursor_pos.y());
+              auto drag_image_top_left_corner = (cursor_pos_i - drag_offset_);
+              auto drag_image_position_scaled =
+                  gfx::Point(scale_factor * drag_image_top_left_corner.x(),
+                             scale_factor * drag_image_top_left_corner.y());
+              drag_image_content_rect_.set_origin(drag_image_position_scaled);
 
               auto damage_rect =
                   gfx::UnionRects(old_content_rect, drag_image_content_rect_);
@@ -2714,7 +2719,7 @@ void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
       // NOTE(danielm): here we intersect the rectangles of the screen and the
       // drag image to prevent the image of the dragged image from disappearing
       // when it's moved partially beyond the right border of the screen
-      auto screen_size = this->GetOffScreenRenderWidgetHostView()->size();
+      auto screen_size = GetOffScreenRenderWidgetHostView()->SizeInPixels();
       auto screen_rect = gfx::Rect(gfx::Point(0, 0), screen_size);
       auto paint_rect =
           gfx::IntersectRects(screen_rect, drag_image_content_rect_);
@@ -3155,8 +3160,10 @@ void WebContents::StartDragging(const content::DropData& drop_data,
                                 gfx::Vector2d const& offset) {
   start_dragging_ = true;
   drop_data_ = drop_data; drag_ops_ = ops;
+  gfx::Size scaled_size(std::ceil(GetScaleFactor() * drag_image.width()),
+                        std::ceil(GetScaleFactor() * drag_image.height()));
   drag_image_content_rect_ =
-      gfx::Rect(gfx::Point(), drag_image.size());
+      gfx::Rect(gfx::Point(), scaled_size);
   drag_offset_ = offset;
   MakeDragImageMailbox(drag_image);
 }
@@ -3168,7 +3175,8 @@ void WebContents::MakeDragImageMailbox(gfx::ImageSkia const& drag_image) {
   auto context_provider = context_factory->SharedMainThreadContextProvider();
   auto* sii = context_provider->SharedImageInterface();
 
-  auto* bitmap = drag_image.bitmap();
+  auto& rep = drag_image.GetRepresentation(GetScaleFactor());
+  auto* bitmap = &rep.GetBitmap();
   if (!bitmap) {
     return;
   }
@@ -3195,8 +3203,10 @@ void WebContents::MakeDragImageMailbox(gfx::ImageSkia const& drag_image) {
   base::span<const uint8_t> pixels =
       base::make_span(reinterpret_cast<const uint8_t*>(pixel_data), pixel_size);
 
+  auto size = gfx::Size(bitmap->width(), bitmap->height());
+
   drag_image_mailbox_ = sii->CreateSharedImage(
-      viz::ResourceFormat::BGRA_8888, drag_image.size(), gfx::ColorSpace(),
+      viz::ResourceFormat::BGRA_8888, size, gfx::ColorSpace(),
       gpu::SHARED_IMAGE_USAGE_DISPLAY, pixels);
   drag_image_sync_token_ = sii->GenVerifiedSyncToken();
 }
