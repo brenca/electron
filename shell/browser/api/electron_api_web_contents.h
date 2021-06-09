@@ -352,6 +352,7 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   float GetScaleFactor() const;
 #endif
   void Invalidate();
+  void InvalidateRect(gfx::Rect const& rect);
   gfx::Size GetSizeForNewRenderView(content::WebContents*) override;
 
   // Methods for zoom handling.
@@ -424,6 +425,13 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
     return script_executor_.get();
   }
 #endif
+
+  void StartDragging(const content::DropData& drop_data,
+                     blink::WebDragOperationsMask ops,
+                     gfx::ImageSkia drag_image,
+                     gfx::Vector2d const& offset);
+  void MakeDragImageMailbox(gfx::ImageSkia const& drag_image);
+  void DestroyDragImageMailbox();
 
  protected:
   // Does not manage lifetime of |web_contents|.
@@ -699,6 +707,16 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
       receivers_;
   std::map<content::RenderFrameHost*, std::vector<mojo::ReceiverId>>
       frame_to_receivers_map_;
+
+  bool start_dragging_ = false;
+  bool dragging_ = false;
+  bool drag_ended_ = false;
+  content::DropData drop_data_;
+  blink::WebDragOperationsMask drag_ops_ = blink::kWebDragOperationNone;
+  base::Optional<gpu::Mailbox> drag_image_mailbox_;
+  base::Optional<gpu::SyncToken> drag_image_sync_token_;
+  gfx::Vector2d drag_offset_;
+  gfx::Rect drag_image_content_rect_;
 
   base::WeakPtrFactory<WebContents> weak_factory_;
 

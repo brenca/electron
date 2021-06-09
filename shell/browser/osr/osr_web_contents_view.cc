@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "shell/browser/osr/osr_web_contents_view.h"
+#include "shell/browser/api/electron_api_web_contents.h"
 
 #include "content/browser/web_contents/web_contents_impl.h"  // nogncheck
 #include "content/public/browser/render_view_host.h"
@@ -166,9 +167,18 @@ void OffScreenWebContentsView::StartDragging(
     const gfx::Vector2d& image_offset,
     const content::DragEventSourceInfo& event_info,
     content::RenderWidgetHostImpl* source_rwh) {
-  if (web_contents_)
+  if (web_contents_) {
+    auto* contents_delegate =
+        static_cast<electron::api::WebContents*>(web_contents_->GetDelegate());
+    if (contents_delegate) {
+      contents_delegate->StartDragging(drop_data, allowed_ops, image,
+                                       image_offset);
+      return;
+    }
+  } else {
     static_cast<content::WebContentsImpl*>(web_contents_)
         ->SystemDragEnded(source_rwh);
+  }
 }
 
 void OffScreenWebContentsView::UpdateDragCursor(
