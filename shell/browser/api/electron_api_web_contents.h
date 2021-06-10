@@ -430,8 +430,8 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
                      blink::WebDragOperationsMask ops,
                      gfx::ImageSkia drag_image,
                      gfx::Vector2d const& offset);
-  void MakeDragImageMailbox(gfx::ImageSkia const& drag_image);
-  void DestroyDragImageMailbox();
+  void MakeDragImageMailbox(gfx::Point const& position);
+  void DestroyDragImageMailbox(bool force_destruct);
 
  protected:
   // Does not manage lifetime of |web_contents|.
@@ -712,10 +712,14 @@ class WebContents : public gin_helper::TrackableObject<WebContents>,
   bool dragging_ = false;
   bool drag_ended_ = false;
   content::DropData drop_data_;
+  gfx::ImageSkia drag_image_;
   blink::WebDragOperationsMask drag_ops_ = blink::kWebDragOperationNone;
   base::Optional<gpu::Mailbox> drag_image_mailbox_;
   base::Optional<gpu::SyncToken> drag_image_sync_token_;
+  base::Optional<gpu::Mailbox> drag_image_mailbox_destroying_;
+  base::Optional<gpu::SyncToken> drag_image_sync_token_destroying_;
   gfx::Vector2d drag_offset_;
+  gfx::Vector2d drag_correction_;
   gfx::Rect drag_image_content_rect_;
 
   base::WeakPtrFactory<WebContents> weak_factory_;

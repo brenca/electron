@@ -714,6 +714,7 @@ void WebContents::InitWithExtensionView(v8::Isolate* isolate,
 #endif
 
 WebContents::~WebContents() {
+    DestroyDragImageMailbox(true);
   // The destroy() is called.
   if (managed_web_contents()) {
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
@@ -2466,7 +2467,6 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
             rwh->DragTargetDragOver(cursor_pos, cursor_pos, drag_ops_,
                                     mouse_event.GetModifiers());
 
-            if (drag_image_mailbox_.has_value()) {
               auto old_content_rect = drag_image_content_rect_;
 
               auto scale_factor = GetScaleFactor();
@@ -2476,12 +2476,11 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
               auto drag_image_position_scaled =
                   gfx::Point(scale_factor * drag_image_top_left_corner.x(),
                              scale_factor * drag_image_top_left_corner.y());
-              drag_image_content_rect_.set_origin(drag_image_position_scaled);
+              MakeDragImageMailbox(drag_image_position_scaled);
 
               auto damage_rect =
                   gfx::UnionRects(old_content_rect, drag_image_content_rect_);
               InvalidateRect(damage_rect);
-            }
           }
         } else if (type == blink::WebInputEvent::Type::kMouseUp && dragging_) {
           rwh->DragTargetDrop(drop_data_, cursor_pos, cursor_pos,
@@ -2495,7 +2494,7 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
           drag_ops_ = blink::kWebDragOperationNone;
 
           if (drag_image_mailbox_.has_value()) {
-            DestroyDragImageMailbox();
+            DestroyDragImageMailbox(false);
             InvalidateRect(drag_image_content_rect_);
           }
         }
@@ -2716,21 +2715,12 @@ void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
     }
 
     if (drag_image_mailbox_.has_value()) {
-      // NOTE(danielm): here we intersect the rectangles of the screen and the
-      // drag image to prevent the image of the dragged image from disappearing
-      // when it's moved partially beyond the right border of the screen
-      auto screen_size = GetOffScreenRenderWidgetHostView()->SizeInPixels();
-      auto screen_rect = gfx::Rect(gfx::Point(0, 0), screen_size);
-      auto paint_rect =
-          gfx::IntersectRects(screen_rect, drag_image_content_rect_);
-
       for (PaintObserver& observer : paint_observers_) {
-        observer.OnTexturePaint(
-            gpu::Mailbox(), gpu::SyncToken(),
-            gfx::Rect(), true, nullptr, nullptr);
+        observer.OnTexturePaint(gpu::Mailbox(), gpu::SyncToken(), gfx::Rect(),
+                                true, nullptr, nullptr);
         observer.OnTexturePaint(
             drag_image_mailbox_.value(), drag_image_sync_token_.value(),
-            paint_rect, true, nullptr, nullptr);
+            drag_image_content_rect_, true, nullptr, nullptr);
       }
     } else if (drag_ended_) {
       drag_ended_ = false;
@@ -3159,23 +3149,51 @@ void WebContents::StartDragging(const content::DropData& drop_data,
                                 gfx::ImageSkia drag_image,
                                 gfx::Vector2d const& offset) {
   start_dragging_ = true;
-  drop_data_ = drop_data; drag_ops_ = ops;
+  drop_data_ = drop_data;
+  drag_ops_ = ops;
   gfx::Size scaled_size(std::ceil(GetScaleFactor() * drag_image.width()),
                         std::ceil(GetScaleFactor() * drag_image.height()));
   drag_image_content_rect_ =
       gfx::Rect(gfx::Point(), scaled_size);
   drag_offset_ = offset;
-  MakeDragImageMailbox(drag_image);
+  drag_image_ = drag_image;
 }
 
-void WebContents::MakeDragImageMailbox(gfx::ImageSkia const& drag_image) {
-  DCHECK(!drag_image_mailbox_.has_value());
+void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
+  float dx = 0, dy = 0;
+  auto screen_size = GetOffScreenRenderWidgetHostView()->SizeInPixels();
+  gfx::Size scaled_size(std::ceil(GetScaleFactor() * drag_image_.width()),
+                        std::ceil(GetScaleFactor() * drag_image_.height()));
+  auto max_x = screen_size.width() - scaled_size.width() - 1;
+  auto max_y = screen_size.height() - scaled_size.height() - 1;
+
+  if(position.x() < 0)
+      dx = -position.x();
+  if(position.y() < 0)
+      dy = -position.y();
+  if (position.x() >= max_x)
+      dx = max_x - position.x();
+  if (position.y() >= max_y)
+      dy = max_y - position.y();
+
+  auto drag_correction = gfx::Vector2d(dx, dy);
+
+  drag_image_content_rect_.set_x(std::min(std::max(position.x(), 0), max_x));
+  drag_image_content_rect_.set_y(std::min(std::max(position.y(), 0), max_y));
+
+  if (drag_correction == drag_correction_ && drag_image_mailbox_) {
+      return;
+  }
+
+  drag_correction_ = drag_correction;
+
+  DestroyDragImageMailbox(false);
 
   auto* context_factory = content::GetContextFactory();
   auto context_provider = context_factory->SharedMainThreadContextProvider();
   auto* sii = context_provider->SharedImageInterface();
 
-  auto& rep = drag_image.GetRepresentation(GetScaleFactor());
+  auto& rep = drag_image_.GetRepresentation(GetScaleFactor());
   auto* bitmap = &rep.GetBitmap();
   if (!bitmap) {
     return;
@@ -3185,16 +3203,19 @@ void WebContents::MakeDragImageMailbox(gfx::ImageSkia const& drag_image) {
   paint.setColor({1.f, 1.f, 1.f, 0.8f});
 
   // Flip the drag image
-  auto surf = SkSurface::MakeRaster(bitmap->info());
+  SkBitmap bitmap_copy;
+  bitmap_copy.allocN32Pixels(bitmap->width(), bitmap->height());
+  auto surf = SkSurface::MakeRaster(bitmap_copy.info());
   auto* canvas = surf->getCanvas();
   canvas->scale(1, -1);
-  canvas->translate(0, -bitmap->height());
+  canvas->translate(0, -bitmap_copy.height());
+  canvas->translate(-dx, -dy);
   canvas->drawBitmap(*bitmap, 0, 0, &paint);
   auto image = surf->makeImageSnapshot();
-  image->readPixels(bitmap->pixmap(), 0, 0);
+  image->readPixels(bitmap_copy.pixmap(), 0, 0);
 
-  void* pixel_data = bitmap->getPixels();
-  size_t pixel_size = bitmap->computeByteSize();
+  void* pixel_data = bitmap_copy.getPixels();
+  auto pixel_size = bitmap_copy.computeByteSize();
 
   if (pixel_size == 0) {
     return;
@@ -3211,21 +3232,25 @@ void WebContents::MakeDragImageMailbox(gfx::ImageSkia const& drag_image) {
   drag_image_sync_token_ = sii->GenVerifiedSyncToken();
 }
 
-void WebContents::DestroyDragImageMailbox() {
-  DCHECK(drag_image_mailbox_.has_value());
-  DCHECK(drag_image_sync_token_.has_value());
-  if (!drag_image_mailbox_) {
-    return;
-  }
-
+void WebContents::DestroyDragImageMailbox(bool force_destruct) {
   auto* context_factory = content::GetContextFactory();
   auto context_provider = context_factory->SharedMainThreadContextProvider();
   auto* sii = context_provider->SharedImageInterface();
 
-  sii->DestroySharedImage(drag_image_sync_token_.value(),
-                          drag_image_mailbox_.value());
+  if (drag_image_mailbox_destroying_) {
+    sii->DestroySharedImage(*drag_image_sync_token_destroying_, *drag_image_mailbox_destroying_);
+    drag_image_mailbox_destroying_.reset();
+    drag_image_sync_token_destroying_.reset();
+  }
+
+  drag_image_mailbox_destroying_ = drag_image_mailbox_;
+  drag_image_sync_token_destroying_ = drag_image_sync_token_;
   drag_image_mailbox_.reset();
   drag_image_sync_token_.reset();
+
+  if (force_destruct) {
+      DestroyDragImageMailbox(false);
+  }
 }
 
 // static
