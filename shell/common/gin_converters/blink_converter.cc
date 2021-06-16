@@ -244,6 +244,11 @@ bool Converter<blink::WebMouseEvent>::FromV8(v8::Isolate* isolate,
   dict.Get("movementX", &out->movement_x);
   dict.Get("movementY", &out->movement_y);
   dict.Get("clickCount", &out->click_count);
+
+  int pointer_type = static_cast<int>(ui::EventPointerType::kUnknown);
+  dict.Get("pointer_type", &pointer_type);
+  out->pointer_type = static_cast<ui::EventPointerType>(pointer_type);
+
   return true;
 }
 
