@@ -28,6 +28,7 @@
 #include "content/browser/renderer_host/render_widget_host_view_base.h"  // nogncheck
 #include "content/common/widget_messages.h"
 #include "content/public/browser/child_process_security_policy.h"
+#include "content/public/browser/context_factory.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/download_request_utils.h"
 #include "content/public/browser/favicon_status.h"
@@ -53,6 +54,8 @@
 #include "gin/handle.h"
 #include "gin/object_template_builder.h"
 #include "gin/wrappable.h"
+#include "gpu/command_buffer/client/shared_image_interface.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -106,6 +109,7 @@
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/messaging/transferable_message.mojom.h"
 #include "third_party/blink/public/mojom/renderer_preferences.mojom.h"
+#include "third_party/skia/include/core/SkSurface.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/display/screen.h"
@@ -710,6 +714,7 @@ void WebContents::InitWithExtensionView(v8::Isolate* isolate,
 #endif
 
 WebContents::~WebContents() {
+    DestroyDragImageMailbox(true);
   // The destroy() is called.
   if (managed_web_contents()) {
 #if BUILDFLAG(ENABLE_ELECTRON_EXTENSIONS)
@@ -2449,6 +2454,50 @@ void WebContents::SendInputEvent(v8::Isolate* isolate,
       if (IsOffScreen()) {
 #if BUILDFLAG(ENABLE_OSR)
         GetOffScreenRenderWidgetHostView()->SendMouseEvent(mouse_event);
+
+        auto* rwh = view->GetRenderWidgetHost();
+        auto cursor_pos = gfx::PointF(mouse_event.PositionInWidget().x(),
+                                      mouse_event.PositionInWidget().y());
+        if (type == blink::WebInputEvent::Type::kMouseMove) {
+          if (!dragging_ && start_dragging_) {
+            rwh->DragTargetDragEnter(drop_data_, cursor_pos, cursor_pos,
+                                     drag_ops_, mouse_event.GetModifiers());
+            dragging_ = true;
+          } else if (dragging_) {
+            rwh->DragTargetDragOver(cursor_pos, cursor_pos, drag_ops_,
+                                    mouse_event.GetModifiers());
+
+              auto old_content_rect = drag_image_content_rect_;
+
+              auto scale_factor = GetScaleFactor();
+              auto cursor_pos_i = gfx::Point(cursor_pos.x(),
+                                             cursor_pos.y());
+              auto drag_image_top_left_corner = (cursor_pos_i - drag_offset_);
+              auto drag_image_position_scaled =
+                  gfx::Point(scale_factor * drag_image_top_left_corner.x(),
+                             scale_factor * drag_image_top_left_corner.y());
+              MakeDragImageMailbox(drag_image_position_scaled);
+
+              auto damage_rect =
+                  gfx::UnionRects(old_content_rect, drag_image_content_rect_);
+              InvalidateRect(damage_rect);
+          }
+        } else if (type == blink::WebInputEvent::Type::kMouseUp && dragging_) {
+          rwh->DragTargetDrop(drop_data_, cursor_pos, cursor_pos,
+                              mouse_event.GetModifiers());
+          rwh->DragSourceEndedAt(cursor_pos, cursor_pos, drag_ops_);
+          rwh->DragSourceSystemDragEnded();
+
+          drop_data_ = {};
+          start_dragging_ = dragging_ = false;
+          drag_ended_ = true;
+          drag_ops_ = blink::kWebDragOperationNone;
+
+          if (drag_image_mailbox_.has_value()) {
+            DestroyDragImageMailbox(false);
+            InvalidateRect(drag_image_content_rect_);
+          }
+        }
 #endif
       } else {
         rwh->ForwardMouseEvent(mouse_event);
@@ -2659,10 +2708,27 @@ void WebContents::OnTexturePaint(const gpu::Mailbox& mailbox,
                                  void (*callback)(void*, void*),
                                  void* context) {
   if (paint_observers_.might_have_observers()) {
-    for (PaintObserver& observer : paint_observers_)
+    for (PaintObserver& observer : paint_observers_) {
       observer.OnTexturePaint(std::move(mailbox), std::move(sync_token),
                               std::move(content_rect), is_popup, callback,
                               context);
+    }
+
+    if (drag_image_mailbox_.has_value()) {
+      for (PaintObserver& observer : paint_observers_) {
+        observer.OnTexturePaint(gpu::Mailbox(), gpu::SyncToken(), gfx::Rect(),
+                                true, nullptr, nullptr);
+        observer.OnTexturePaint(
+            drag_image_mailbox_.value(), drag_image_sync_token_.value(),
+            drag_image_content_rect_, true, nullptr, nullptr);
+      }
+    } else if (drag_ended_) {
+      drag_ended_ = false;
+      for (PaintObserver& observer : paint_observers_) {
+        observer.OnTexturePaint(gpu::Mailbox(), gpu::SyncToken(), gfx::Rect(),
+                                true, nullptr, nullptr);
+      }
+    }
   } else {
     callback(context, nullptr);
   }
@@ -2722,6 +2788,20 @@ void WebContents::Invalidate() {
   }
 }
 
+void WebContents::InvalidateRect(gfx::Rect const& rect) {
+    if (IsOffScreen()) {
+#if BUILDFLAG(ENABLE_OSR)
+      auto* osr_rwhv = GetOffScreenRenderWidgetHostView();
+      if (osr_rwhv)
+        osr_rwhv->InvalidateRect(rect);
+#endif
+    } else {
+      auto* const window = owner_window();
+      if (window)
+        window->Invalidate();
+    }
+}
+
 gfx::Size WebContents::GetSizeForNewRenderView(content::WebContents* wc) {
   if (IsOffScreen() && wc == web_contents()) {
     auto* relay = OffscreenWindowRelay::FromWebContents(web_contents());
@@ -2761,7 +2841,7 @@ double WebContents::GetZoomFactor() const {
 
 void WebContents::SetPageScale(double scale) {
   auto* frame = static_cast<content::RenderFrameHostImpl*>(
-        web_contents()->GetMainFrame());
+      web_contents()->GetMainFrame());
   frame->GetAssociatedLocalMainFrame()->SetScaleFactorCorrection(scale);
 }
 
@@ -3062,6 +3142,115 @@ void WebContents::BuildPrototype(v8::Isolate* isolate,
 ElectronBrowserContext* WebContents::GetBrowserContext() const {
   return static_cast<ElectronBrowserContext*>(
       web_contents()->GetBrowserContext());
+}
+
+void WebContents::StartDragging(const content::DropData& drop_data,
+                                blink::WebDragOperationsMask ops,
+                                gfx::ImageSkia drag_image,
+                                gfx::Vector2d const& offset) {
+  start_dragging_ = true;
+  drop_data_ = drop_data;
+  drag_ops_ = ops;
+  gfx::Size scaled_size(std::ceil(GetScaleFactor() * drag_image.width()),
+                        std::ceil(GetScaleFactor() * drag_image.height()));
+  drag_image_content_rect_ =
+      gfx::Rect(gfx::Point(), scaled_size);
+  drag_offset_ = offset;
+  drag_image_ = drag_image;
+}
+
+void WebContents::MakeDragImageMailbox(gfx::Point const& position) {
+  float dx = 0, dy = 0;
+  auto screen_size = GetOffScreenRenderWidgetHostView()->SizeInPixels();
+  gfx::Size scaled_size(std::ceil(GetScaleFactor() * drag_image_.width()),
+                        std::ceil(GetScaleFactor() * drag_image_.height()));
+  auto max_x = screen_size.width() - scaled_size.width() - 1;
+  auto max_y = screen_size.height() - scaled_size.height() - 1;
+
+  if(position.x() < 0)
+      dx = -position.x();
+  if(position.y() < 0)
+      dy = -position.y();
+  if (position.x() >= max_x)
+      dx = max_x - position.x();
+  if (position.y() >= max_y)
+      dy = max_y - position.y();
+
+  auto drag_correction = gfx::Vector2d(dx, dy);
+
+  drag_image_content_rect_.set_x(std::min(std::max(position.x(), 0), max_x));
+  drag_image_content_rect_.set_y(std::min(std::max(position.y(), 0), max_y));
+
+  if (drag_correction == drag_correction_ && drag_image_mailbox_) {
+      return;
+  }
+
+  drag_correction_ = drag_correction;
+
+  DestroyDragImageMailbox(false);
+
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  auto& rep = drag_image_.GetRepresentation(GetScaleFactor());
+  auto* bitmap = &rep.GetBitmap();
+  if (!bitmap) {
+    return;
+  }
+
+  SkPaint paint;
+  paint.setColor({1.f, 1.f, 1.f, 0.8f});
+
+  // Flip the drag image
+  SkBitmap bitmap_copy;
+  bitmap_copy.allocN32Pixels(bitmap->width(), bitmap->height());
+  auto surf = SkSurface::MakeRaster(bitmap_copy.info());
+  auto* canvas = surf->getCanvas();
+  canvas->scale(1, -1);
+  canvas->translate(0, -bitmap_copy.height());
+  canvas->translate(-dx, -dy);
+  canvas->drawBitmap(*bitmap, 0, 0, &paint);
+  auto image = surf->makeImageSnapshot();
+  image->readPixels(bitmap_copy.pixmap(), 0, 0);
+
+  void* pixel_data = bitmap_copy.getPixels();
+  auto pixel_size = bitmap_copy.computeByteSize();
+
+  if (pixel_size == 0) {
+    return;
+  }
+
+  base::span<const uint8_t> pixels =
+      base::make_span(reinterpret_cast<const uint8_t*>(pixel_data), pixel_size);
+
+  auto size = gfx::Size(bitmap->width(), bitmap->height());
+
+  drag_image_mailbox_ = sii->CreateSharedImage(
+      viz::ResourceFormat::BGRA_8888, size, gfx::ColorSpace(),
+      gpu::SHARED_IMAGE_USAGE_DISPLAY, pixels);
+  drag_image_sync_token_ = sii->GenVerifiedSyncToken();
+}
+
+void WebContents::DestroyDragImageMailbox(bool force_destruct) {
+  auto* context_factory = content::GetContextFactory();
+  auto context_provider = context_factory->SharedMainThreadContextProvider();
+  auto* sii = context_provider->SharedImageInterface();
+
+  if (drag_image_mailbox_destroying_) {
+    sii->DestroySharedImage(*drag_image_sync_token_destroying_, *drag_image_mailbox_destroying_);
+    drag_image_mailbox_destroying_.reset();
+    drag_image_sync_token_destroying_.reset();
+  }
+
+  drag_image_mailbox_destroying_ = drag_image_mailbox_;
+  drag_image_sync_token_destroying_ = drag_image_sync_token_;
+  drag_image_mailbox_.reset();
+  drag_image_sync_token_.reset();
+
+  if (force_destruct) {
+      DestroyDragImageMailbox(false);
+  }
 }
 
 // static

@@ -784,6 +784,10 @@ void OffScreenRenderWidgetHostView::Invalidate() {
   GetCompositor()->ScheduleFullRedraw();
 }
 
+void OffScreenRenderWidgetHostView::InvalidateRect(gfx::Rect const& rect) {
+  GetCompositor()->ScheduleRedrawRect(rect);
+}
+
 gfx::Size OffScreenRenderWidgetHostView::SizeInPixels() {
   if (IsPopupWidget()) {
     return gfx::ConvertSizeToPixel(current_device_scale_factor_,

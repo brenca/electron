@@ -191,6 +191,7 @@ class OffScreenRenderWidgetHostView : public content::RenderWidgetHostViewBase,
       const base::Optional<viz::LocalSurfaceIdAllocation>&
           child_local_surface_id_allocation);
   void Invalidate();
+  void InvalidateRect(gfx::Rect const& rect);
   gfx::Size SizeInPixels();
 
   void SendMouseEvent(const blink::WebMouseEvent& event);
